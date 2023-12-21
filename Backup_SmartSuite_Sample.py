@@ -1,27 +1,32 @@
-
 ##intallation prerequisites:
 #python3 -m pip install requests
-
+#Version 1.01
 import requests
 import json
 import os
 
-
-#Param and Secrets
-baseURL = "https://app.smartsuite.com/api/"
+#Secrets
 
 """
 You should do it in a more secure way than hard code :) 
 But this is a smaple code I wrote
+Replace the Token & ACCOUNT-ID with your own.
 """
 # Generating an API Key - https://help.smartsuite.com/en/articles/4855681-generating-an-api-key
-tk="Token LONGHEXNUMBER"
-# the account id you take the first part in the URL https://app.smartsuite.com/ACCOUNTID/solution/SOLUTIONID
-headers = {"accept":"application/json","Authorization":str(tk),"ACCOUNT-ID":"ACCOUNTID"}
+token="PlaceYourToken"
+ACCOUNT_ID="PlaceyourAccoutID"
 
 # What folder to to write the CSV?
 destFolder="/Users/gadymargalit/backup/"
+destFolder="/temp/backup/"
 
+###Did you put your details above?
+
+#Param
+baseURL = "https://app.smartsuite.com/api/"
+tk="Token " + token
+# the account id you take the first part in the URL https://app.smartsuite.com/ACCOUNTID/solution/SOLUTIONID
+headers = {"accept":"application/json","Authorization":str(tk),"ACCOUNT-ID":ACCOUNT_ID}
 urlApplications=baseURL + "v1/applications/"
 
 
@@ -61,6 +66,8 @@ for table in tablesdata:
     appSolutionname=solutions[appsolution]
   else:
      appSolutionname=appsolution
+  #if appsolution!="Something":
+  #   continue    
   appSolutionname=solutions[appsolution]
   print(f'solu: {appsolution} : {appSolutionname}, Appid: {appID}, appStatus: {appStatus}, TableName : {appName}')
   fields=[]
@@ -81,13 +88,12 @@ for table in tablesdata:
   if resp2.status_code != 200:
      print('error: ' + str(resp2.status_code))
   else:
-     solFolder=destFolder + appSolutionname +'/'
+     solFolder=destFolder + appSolutionname.replace("/","_") +'/'
      #print("working on " + solFolder)
      if not os.path.exists(solFolder): 
         os.makedirs(solFolder) 
-     f = open(solFolder +'/' + appName.replace("/","_") +".csv", "w")
+     f = open(solFolder +'/' + appName.replace("/","_") +".csv", "w", encoding="utf-8")
      f.write(resp2.text)
      f.close()
-
 
 
