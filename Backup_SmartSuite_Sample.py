@@ -1,6 +1,6 @@
 ##intallation prerequisites:
 #python3 -m pip install requests
-#Version 1.01
+#Version 1.03
 import requests
 import json
 import os
@@ -93,7 +93,7 @@ for table in tablesdata:
      if not os.path.exists(solFolder): 
         os.makedirs(solFolder) 
      f = open(solFolder +'/' + appName.replace("/","_") +".csv", "w", encoding="utf-8")
-     f.write(resp2.text)
+     f.write(resp2.content.decode('UTF-8'))
      f.close()
 
 
