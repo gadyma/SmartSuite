@@ -17,7 +17,6 @@ token="PlaceYourToken"
 ACCOUNT_ID="PlaceyourAccoutID"
 
 # What folder to to write the CSV?
-destFolder="/Users/gadymargalit/backup/"
 destFolder="/temp/backup/"
 
 ###Did you put your details above?
@@ -66,9 +65,10 @@ for table in tablesdata:
     appSolutionname=solutions[appsolution]
   else:
      appSolutionname=appsolution
-  #if appsolution!="Something":
+  #If you want to exclude things from backup...
+  # if appsolution!="Something":
   #   continue    
-  appSolutionname=solutions[appsolution]
+ 
   print(f'solu: {appsolution} : {appSolutionname}, Appid: {appID}, appStatus: {appStatus}, TableName : {appName}')
   fields=[]
   fieldsNames=[]
