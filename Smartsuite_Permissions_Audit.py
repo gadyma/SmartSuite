@@ -4,12 +4,12 @@
 import requests
 import json
 import os
-import csv
 from datetime import datetime
 from pathlib import Path
+import csv
 
 # Secrets
-from config import TOKEN, ACCOUNT_ID
+from config import TOKEN, ACCOUNT_ID,DEST_FOLDER
 """
 # Generating an API Key - https://help.smartsuite.com/en/articles/4855681-generating-an-api-key
 # Create a config.py file and put in it
@@ -23,7 +23,7 @@ from config import TOKEN, ACCOUNT_ID
 # dest_folder = "c:\\temp\\backup/"
 # destFolder="~/Google Drive/Shared drives/מערך טכנולוגיה/Operations/SmartSuite backup/"
 # dest_folder = Path("c:/temp/backup/")
-dest_folder = Path.home() / "Library/CloudStorage/GoogleDrive-gady@esh.com/Shared drives/מערך טכנולוגיה/Operations/SmartSuite backup/"
+dest_folder = DEST_FOLDER
 
 # Param
 base_url = "https://app.smartsuite.com/api/"
@@ -33,6 +33,17 @@ headers = {"accept": "application/json", "Authorization": str(tk), "ACCOUNT-ID":
 
 # if you want to create it in timestamp folder:
 # destFolder=destFolder + datetime.now().strftime("%Y-%m-%d %H:%M:%S") +"/"
+
+
+def Merge(dict1, dict2): 
+    res = dict1 | dict2
+    return res 
+
+def get_label_from_slug(data, field_slug):
+    for field in data:
+        if field['slug'] == field_slug:
+            return field['label']
+    return None
 
 
 def get_solutions():
@@ -69,55 +80,49 @@ def get_tables():
     tables.clear
     team = None
     for table in tables_data:
-        table_info = {
-            'name': table['id'],
-            'name': table['name'],
-            'status': table['status'],
-            'solution': table['solution'],
-            'structure': table['structure'],
-            'permissions': table['permissions']
-        }
-        # print(table_info)
-        tables[table['id']] = table_info
-        # fixme!
-        if team is None and table['solution'] in solutions and solutions[table['solution']]['name'] == 'System' and table['name'] == 'Teams':
-            team = table['id']
-            print('Table Teamsfound')
+        if table['solution'] in solutions:
+            table_info = {
+                'name': table['id'],
+                'name': table['name'],
+                'status': table['status'],
+                'solution': solutions[table['solution']]['name'],
+                'structure': table['structure'],
+                'permissions': table['permissions']
+            }
+            # print(table_info)
+            tables[table['id']] = table_info
+            # fixme!
+            if team is None and table['solution'] in solutions and solutions[table['solution']]['name'] == 'System' and table['name'] == 'Teams':
+                team = table['id']
+                print('Table Teamsfound')
     return tables, team
 
-def get_fields(table_id, table_name, solution_name):
-    url_applications = base_url + "v1/applications/" + table_id
-    resp = requests.get(url_applications, headers=headers)
-    if resp.status_code != 200:
-        print("Can't load Table field error: " + str(resp.status_code))
-    else:
-        print(f'Table: {table_id} fields Loaded Successfully')
-        fields_data = resp.json()
-    fields_permission = {}
-    fields_permission.clear
-    for p in fields_data['field_permissions']:
-        # print(f"{p}\n")
-        field_info = {
-            'slug': p['field_slug'],
-            'table': table_name,
-            'field': fields_data['name'],
-            'solution': solution_name,
-            'read': p['read'],
-            'write': p['write']
-        }
-        fields_permission[p['field_slug']] = field_info
-        # print (f"{field_info}\n\n")
-    return fields_permission
-
 def get_fields_permission():
-    field_permissions = {}
-    field_permissions.clear
+    field_permissions = []
     for key, item in TN.items():
-        if item['solution'] in solutions:
-            field = get_fields(key, item['name'], sol[item['solution']]['name'])
-            if len(field) > 0:
-                print(field)
-                field_permissions = {**field_permissions, **field}
+        table_id=key
+        table_name=item['name']
+        solution_name=item['solution']
+        url_applications = base_url + "v1/applications/" + table_id
+        resp = requests.get(url_applications, headers=headers)
+        if resp.status_code != 200:
+            print("Can't load Table field error: " + str(resp.status_code))
+        else:
+            print(f'Table: {table_id} fields Loaded Successfully')
+            fields_data = resp.json()
+            for p in fields_data['field_permissions']:
+                print(f"{p}\n")
+                #print(fields_data)
+                field_info = { 
+                    'field_slug': p['field_slug'],
+                    'solution': solution_name,
+                    'table': table_name,
+                    'field': get_label_from_slug(fields_data['structure'], p['field_slug']),
+                    'read': p['read'],
+                    'write': p['write']
+                }
+                if field_info['field'] != None:
+                    field_permissions.append(field_info)
     return field_permissions
 
 def get_users():
@@ -203,11 +208,11 @@ user_names = get_users()
 teams_names = get_teams()
 sol = recursive_replace_uid(solutions)
 TN = recursive_replace_uid(tables_names)
+
+
 field_permissions = get_fields_permission()
 field_perm = recursive_replace_uid(field_permissions)
-
 dest_folder.mkdir(parents=True, exist_ok=True)
-
 permissions_file = dest_folder / "permissions.csv"
 with permissions_file.open("w", newline='', encoding="utf-8-sig") as file:
     csv_writer = csv.writer(file)
@@ -247,19 +252,21 @@ with permissions_file.open("w", newline='', encoding="utf-8-sig") as file:
         permissions_metadata = i['permissions'].get('permissions_metadata', '')
         csv_writer.writerow([type, solution, table, field,level, members,teams, members_read,members_write, teams_read, teams_write, owners, private_to])
     # Write field permissions
-    for (k, i) in field_perm.items():
+    for fld in field_perm:
         member=""
         level=""
         team=""
         type="field"
-        solution=sol[i['solution']]['name']
-        table=i['table']
-        field=i['field']
-        members_read = i['read'].get('members', '')
-        members_write = i['write'].get('members', '')
-        teams_read = i['read'].get('members', '')
-        teams_write = i['write'].get('members', '')
-        owners = i.get('owners', '')
-        private_to = i.get('private_to', '')
-        if members_read or members_write or teams_read or teams_write:
+        solution=fld['solution']
+        table=fld['table']
+        field=fld['field']
+        members_read = fld['read'].get('members', '')
+        members_write = fld['write'].get('members', '')
+        teams_read = fld['read'].get('members', '')
+        teams_write = fld['write'].get('members', '')
+        owners = fld.get('owners', '')
+        private_to = fld.get('private_to', '')
+        if members_read or members_write or teams_read or teams_write or teams:
             csv_writer.writerow([type, solution, table, field,level, members,teams, members_read,members_write, teams_read, teams_write, owners, private_to])
+            #print([type, solution, table, field,level, members,teams, members_read,members_write, teams_read, teams_write, owners, private_to])
+
