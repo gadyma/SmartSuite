@@ -217,7 +217,7 @@ permissions_file = dest_folder / "permissions.csv"
 with permissions_file.open("w", newline='', encoding="utf-8-sig") as file:
     csv_writer = csv.writer(file)
     # Write headers
-    csv_writer.writerow(["Type", "Solution", "Table", "Field", "level","members", "teams", "members_read","teams_read", "teams_write","members_write", "owners", "private_to"])
+    csv_writer.writerow(["Type", "Solution", "Table", "Field", "level","members", "teams", "members_read","teams_read", "teams_write","members_write", "owners", "private_to","level_read", "level_write"])
     # Write solutions
     for (k, i) in sol.items():
         type="solution"
@@ -233,6 +233,8 @@ with permissions_file.open("w", newline='', encoding="utf-8-sig") as file:
         teams = i['permissions'].get('teams', '')
         owners = i['permissions'].get('owners', '')
         private_to = i['permissions'].get('private_to', '')
+        level_read = ""
+        level_write = ""
         csv_writer.writerow([type, solution, table, field,level, members,teams, members_read,members_write, teams_read, teams_write, owners, private_to])
     # Write tables
     for (k, i) in TN.items():
@@ -250,23 +252,25 @@ with permissions_file.open("w", newline='', encoding="utf-8-sig") as file:
         teams = i['permissions'].get('teams', '')
         level = i['permissions'].get('level', '')
         permissions_metadata = i['permissions'].get('permissions_metadata', '')
+        level_read = ""
+        level_write = ""
         csv_writer.writerow([type, solution, table, field,level, members,teams, members_read,members_write, teams_read, teams_write, owners, private_to])
     # Write field permissions
     for fld in field_perm:
-        member=""
+        members=""
         level=""
-        team=""
+        teams=""
         type="field"
         solution=fld['solution']
         table=fld['table']
         field=fld['field']
+        level_read = fld['read']['audience']
         members_read = fld['read'].get('members', '')
+        level_write = fld['write']['audience']
         members_write = fld['write'].get('members', '')
-        teams_read = fld['read'].get('members', '')
-        teams_write = fld['write'].get('members', '')
+        teams_read = fld['read'].get('teams', '')
+        teams_write = fld['write'].get('teams', '')
         owners = fld.get('owners', '')
         private_to = fld.get('private_to', '')
-        if members_read or members_write or teams_read or teams_write or teams:
-            csv_writer.writerow([type, solution, table, field,level, members,teams, members_read,members_write, teams_read, teams_write, owners, private_to])
-            #print([type, solution, table, field,level, members,teams, members_read,members_write, teams_read, teams_write, owners, private_to])
-
+        csv_writer.writerow([type, solution, table, field,level, members,teams, members_read,members_write, teams_read, teams_write, owners, private_to,level_read,level_write])
+        #print([type, solution, table, field,level, members,teams, members_read,members_write, teams_read, teams_write, owners, private_to,level_read,level_write])
