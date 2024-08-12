@@ -1,5 +1,5 @@
 # python3 -m pip install requests
-# Version 1.1 - Permissions Export
+# Version 1.1b - Permissions Export
 
 import requests
 import json
@@ -217,7 +217,7 @@ permissions_file = dest_folder / "permissions.csv"
 with permissions_file.open("w", newline='', encoding="utf-8-sig") as file:
     csv_writer = csv.writer(file)
     # Write headers
-    csv_writer.writerow(["Type", "Solution", "Table", "Field", "level","members", "teams", "members_read","teams_read", "teams_write","members_write", "owners", "private_to","level_read", "level_write"])
+    csv_writer.writerow(["Type", "Solution", "Table", "Field", "level","members", "teams", "members_read","members_write","teams_read", "teams_write", "owners", "private_to","level_read", "level_write"])
     # Write solutions
     for (k, i) in sol.items():
         type="solution"
