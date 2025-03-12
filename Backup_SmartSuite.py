@@ -1,12 +1,15 @@
 # Installation prerequisites:
 # python3 -m pip install requests
 # Version 2.0 - Backup Tables Structure with Attachments
+import sys
 import requests
 import json
 import os
 from datetime import datetime
 from pathlib import Path
 import csv
+import time
+import shutil
 
 # Secrets
 from config import TOKEN, ACCOUNT_ID,DEST_FOLDER
@@ -17,11 +20,25 @@ from config import TOKEN, ACCOUNT_ID,DEST_FOLDER
 # What folder to write the CSV?
 # destFolder="/Users/gadymargalit/backup/"
 # destFolder="/temp/backup/"
-# destFolder="/Users/gadymargalit/Google Drive/Shared drives/מערך טכנולוגיה/Operations/SmartSuite backup/"
 
 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+
+#Check if a file with the same date already exists in the destination folder.
+current_date = timestamp.split()[0]
+if len(list(Path.home().joinpath(DEST_FOLDER).glob(current_date+'*'))) ==0:
+    print("No existing file found for today. Continuing...")
+    # Your program continues here
+else:
+    print("Exiting program due to existing file for today.")
+    sys.exit(0)  # Exit with success code since this is an expected condition
+
+
 dest_folder = Path.home().joinpath(DEST_FOLDER,timestamp, "")
 print(dest_folder)
+
+
+
 
 # Did you put your details above?
 # Param
@@ -126,6 +143,31 @@ def get_applications():
         print('Tables List Loaded Successfully')
     return response.json()
 
+
+def del_old(days):
+    # Path to the main folder
+    main_folder = DEST_FOLDER
+    main_folder = os.path.expanduser(main_folder)
+    # Get the current time
+    current_time = time.time()
+    # Set the cut-off time to 7 days ago
+    cut_off_time = current_time - (days * 86400)  # 7 days in seconds
+    # Check if the main folder exists
+    if os.path.exists(main_folder):
+        # Iterate through all items in the main folder
+        for folder_name in os.listdir(main_folder):
+            folder_path = os.path.join(main_folder, folder_name)
+            # Check if it's a directory
+            if os.path.isdir(folder_path):
+                # Get the modification time of the folder
+                modification_time = os.path.getmtime(folder_path)
+                # If the folder is older than 7 days, delete it
+                if modification_time < cut_off_time:
+                    print(f'Deleting folder: {folder_path}')
+                    shutil.rmtree(folder_path)
+    else:
+        print(f'The directory {main_folder} does not exist.')
+
 tables_data = get_applications()
 
 for table in tables_data:
@@ -209,3 +251,4 @@ for table in tables_data:
                     download_attachment(file_url, file_path)
     
         
+del_old(8)
