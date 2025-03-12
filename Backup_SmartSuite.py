@@ -1,6 +1,6 @@
 # Installation prerequisites:
 # python3 -m pip install requests
-# Version 2.0 - Backup Tables Structure with Attachments
+# Version 2.5 - Backup Tables Structure with Attachments
 import sys
 import requests
 import json
