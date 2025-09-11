@@ -1,276 +1,354 @@
-# python3 -m pip install requests
-# Version 1.1b - Permissions Export
+"""
+SmartSuite Permissions Audit Tool
+Version 1.3 - Permissions Export
 
-import requests
+This script exports SmartSuite permissions data to CSV format.
+Requires: python3 -m pip install requests
+
+API Key Generation: https://help.smartsuite.com/en/articles/4855681-generating-an-api-key
+Create a config.py file with:
+    TOKEN = "your_api_token"
+    ACCOUNT_ID = "your_account_id"
+    DEST_FOLDER = Path("path/to/destination")
+"""
+
+import csv
 import json
 import os
+import sys
 from datetime import datetime
 from pathlib import Path
-import csv
 
-# Secrets
-from config import TOKEN, ACCOUNT_ID,DEST_FOLDER
-"""
-# Generating an API Key - https://help.smartsuite.com/en/articles/4855681-generating-an-api-key
-# Create a config.py file and put in it
- TOKEN=dest_folder
- ACCOUNT_ID
-"""
+import requests
 
-# What folder to to write the CSV?
-# destFolder="/Users/gadymargalit/backup/"
-# destFolder="/temp/backup/"
-# dest_folder = "c:\\temp\\backup/"
-# destFolder="~/Google Drive/Shared drives/מערך טכנולוגיה/Operations/SmartSuite backup/"
-# dest_folder = Path("c:/temp/backup/")
-dest_folder = DEST_FOLDER
+# Add home directory to path to import config from ~/config.py
+home_config_path = Path.home() / "config.py"
+if home_config_path.exists():
+    sys.path.insert(0, str(Path.home()))
+    from config import TOKEN, ACCOUNT_ID, DEST_FOLDER
+else:
+    # Fallback to local config.py if ~/config.py doesn't exist
+    from config import TOKEN, ACCOUNT_ID, DEST_FOLDER
 
-# Param
-base_url = "https://app.smartsuite.com/api/"
-tk = "Token " + TOKEN
-# the account id you take the first part in the URL https://app.smartsuite.com/ACCOUNTID/solution/SOLUTIONID
-headers = {"accept": "application/json", "Authorization": str(tk), "ACCOUNT-ID": ACCOUNT_ID}
+# Configuration
+BASE_URL = "https://app.smartsuite.com/api/"
+AUTH_TOKEN = f"Token {TOKEN}"
+HEADERS = {
+    "accept": "application/json",
+    "Authorization": AUTH_TOKEN,
+    "ACCOUNT-ID": ACCOUNT_ID
+}
+DEST_FOLDER = DEST_FOLDER
 
-# if you want to create it in timestamp folder:
-# destFolder=destFolder + datetime.now().strftime("%Y-%m-%d %H:%M:%S") +"/"
+# Optional: Create timestamped folder
+# DEST_FOLDER = DEST_FOLDER / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
 
-def Merge(dict1, dict2): 
-    res = dict1 | dict2
-    return res 
-
-def get_label_from_slug(data, field_slug):
-    for field in data:
+def get_label_from_slug(fields_data, field_slug):
+    """Get field label from field slug."""
+    for field in fields_data:
         if field['slug'] == field_slug:
             return field['label']
     return None
 
 
 def get_solutions():
-    url_s = base_url + "v1/solutions/"
-    resp_s = requests.get(url_s, headers=headers)
-    if resp_s.status_code != 200:
-        print('error: ' + str(resp_s.status_code))
-    else:
-        print('Solutions List Loaded Successfully')
-        data_s = resp_s.json()
+    """Fetch all solutions from SmartSuite API."""
+    url = f"{BASE_URL}v1/solutions/"
+    response = requests.get(url, headers=HEADERS)
+    
+    if response.status_code != 200:
+        print(f'Error loading solutions: {response.status_code}')
+        return {}
+    
+    print('Solutions List Loaded Successfully')
+    data = response.json()
     solutions = {}
-    solutions.clear
-    for s in data_s:
+    
+    for solution in data:
         solution_info = {
-            'name': s['id'],
-            'name': s['name'],
-            'status': s['status'],
-            'permissions': s['permissions'],
+            'id': solution['id'],
+            'name': solution['name'],
+            'status': solution['status'],
+            'permissions': solution['permissions'],
         }
-        # print(solution_info)
-        solutions[s['id']] = solution_info
+        solutions[solution['id']] = solution_info
+    
     return solutions
 
 
-def get_tables():
-    url_applications = base_url + "v1/applications/"
-    resp = requests.get(url_applications, headers=headers)
-    if resp.status_code != 200:
-        print("Can't load Table list error: " + str(resp.status_code))
-    else:
-        print('Tables List Loaded Successfully')
-        tables_data = resp.json()
+def get_tables(solutions):
+    """Fetch all tables/applications from SmartSuite API."""
+    url = f"{BASE_URL}v1/applications/"
+    response = requests.get(url, headers=HEADERS)
+    
+    if response.status_code != 200:
+        print(f"Can't load Table list error: {response.status_code}")
+        return {}, None
+    
+    print('Tables List Loaded Successfully')
+    tables_data = response.json()
     tables = {}
-    tables.clear
-    team = None
+    teams_table = None
+    
     for table in tables_data:
         if table['solution'] in solutions:
             table_info = {
-                'name': table['id'],
+                'id': table['id'],
                 'name': table['name'],
                 'status': table['status'],
                 'solution': solutions[table['solution']]['name'],
                 'structure': table['structure'],
                 'permissions': table['permissions']
             }
-            # print(table_info)
             tables[table['id']] = table_info
-            # fixme!
-            if team is None and table['solution'] in solutions and solutions[table['solution']]['name'] == 'System' and table['name'] == 'Teams':
-                team = table['id']
-                print('Table Teamsfound')
-    return tables, team
+            
+            # Find the Teams table in System solution
+            if (teams_table is None and 
+                table['solution'] in solutions and 
+                solutions[table['solution']]['name'] == 'System' and 
+                table['name'] == 'Teams'):
+                teams_table = table['id']
+                print('Teams table found')
+    
+    return tables, teams_table
 
-def get_fields_permission():
+def get_fields_permission(tables):
+    """Fetch field permissions for all tables."""
     field_permissions = []
-    for key, item in TN.items():
-        table_id=key
-        table_name=item['name']
-        solution_name=item['solution']
-        url_applications = base_url + "v1/applications/" + table_id
-        resp = requests.get(url_applications, headers=headers)
-        if resp.status_code != 200:
-            print("Can't load Table field error: " + str(resp.status_code))
-        else:
-            print(f'Table: {table_id} fields Loaded Successfully')
-            fields_data = resp.json()
-            for p in fields_data['field_permissions']:
-                print(f"{p}\n")
-                #print(fields_data)
-                field_info = { 
-                    'field_slug': p['field_slug'],
-                    'solution': solution_name,
-                    'table': table_name,
-                    'field': get_label_from_slug(fields_data['structure'], p['field_slug']),
-                    'read': p['read'],
-                    'write': p['write']
-                }
-                if field_info['field'] != None:
-                    field_permissions.append(field_info)
+    
+    for table_id, table_info in tables.items():
+        table_name = table_info['name']
+        solution_name = table_info['solution']
+        url = f"{BASE_URL}v1/applications/{table_id}"
+        
+        response = requests.get(url, headers=HEADERS)
+        if response.status_code != 200:
+            print(f"Can't load Table field error: {response.status_code}")
+            continue
+        
+        print(f'Table: {table_id} fields Loaded Successfully')
+        fields_data = response.json()
+        
+        for permission in fields_data['field_permissions']:
+            field_info = { 
+                'field_slug': permission['field_slug'],
+                'solution': solution_name,
+                'table': table_name,
+                'field': get_label_from_slug(fields_data['structure'], permission['field_slug']),
+                'read': permission['read'],
+                'write': permission['write']
+            }
+            if field_info['field'] is not None:
+                field_permissions.append(field_info)
+    
     return field_permissions
 
 def get_users():
-    url_u = base_url + "v1/applications/members/records/list/"
-    resp2 = requests.post(url_u, headers=headers)
-    if resp2.status_code != 200:
-        print('error: ' + str(resp2.status_code))
-    else:
-        print('Users List Loaded Successfully')
-        data_s = resp2.json()
-        # respuser=resp2.content.decode('UTF-8')
+    """Fetch all users from SmartSuite API."""
+    url = f"{BASE_URL}v1/applications/members/records/list/"
+    response = requests.post(url, headers=HEADERS)
+    
+    if response.status_code != 200:
+        print(f'Error loading users: {response.status_code}')
+        return {}
+    
+    print('Users List Loaded Successfully')
+    data = response.json()
     users = {}
-    users.clear
-    for s in data_s['items']:
-        if not s['deleted_date']['date'] and s['type'] != '6':  # not deleted and not system account
+    
+    for user in data['items']:
+        # Skip deleted users and system accounts
+        if not user['deleted_date']['date'] and user['type'] != '6':
             user_info = {
-                'id': s['id'],
-                'full_name': s['full_name']['sys_root'],
-                'email': s['email'][0],
-                'type': s['type'],
-                'role': s['role'],
-                'last_login': s['last_login']['date'],
-                'locale': s['locale']
+                'id': user['id'],
+                'full_name': user['full_name']['sys_root'],
+                'email': user['email'][0],
+                'type': user['type'],
+                'role': user['role'],
+                'last_login': user['last_login']['date'],
+                'locale': user['locale']
             }
-            # print(user_info)
-            users[s['id']] = user_info
+            users[user['id']] = user_info
+    
     return users
 
-def get_teams():
-    url = base_url + 'v1/applications/' + teams_table + '/records/list/?offet=0'
+def get_teams(teams_table_id):
+    """Fetch all teams from SmartSuite API."""
+    if not teams_table_id:
+        print('Teams table not found')
+        return {}
+    
+    url = f"{BASE_URL}v1/applications/{teams_table_id}/records/list/"
     params = {"offset": 0}
-    response = requests.post(url, params=params, headers=headers)
-    if response.status_code == 200:
-        print('Teams List Loaded Successfully')
-        team_data = response.json()
-    else:
+    response = requests.post(url, params=params, headers=HEADERS)
+    
+    if response.status_code != 200:
         print(f"Request failed with status code {response.status_code}")
         print(response.text)
+        return {}
+    
+    print('Teams List Loaded Successfully')
+    team_data = response.json()
     teams = {}
-    teams.clear
+    
     for team in team_data['items']:
         team_info = {
-            'name': team['id'],
+            'id': team['id'],
             'name': team['name'],
             'status': team['status'],
             'members': team['members']
         }
-        # print(team_info)
         teams[team['id']] = team_info
+    
     return teams
 
-def recursive_replace_uid(obj):
+def recursive_replace_uid(obj, users, teams):
+    """Recursively replace user IDs and team IDs with their names."""
     if isinstance(obj, str):
-        new_val = obj
-        if obj in user_names:
-            if user_names[obj]['full_name'] == '':
-                new_val = user_names[obj]['email']
+        # Replace user ID with name
+        if obj in users:
+            if users[obj]['full_name'] == '':
+                return users[obj]['email']
             else:
-                new_val = user_names[obj]['full_name']
-            # print(f"Replacing {obj} with {new_val}")
-        if obj in teams_names:
-            new_val = teams_names[obj]['name']
-            # print(obj, new_val)
-        return new_val
+                return users[obj]['full_name']
+        
+        # Replace team ID with name
+        if obj in teams:
+            return teams[obj]['name']
+        
+        return obj
     elif isinstance(obj, dict):
         new_dict = {}
         for key, value in obj.items():
-            new_dict[key] = recursive_replace_uid(value)
+            new_dict[key] = recursive_replace_uid(value, users, teams)
         return new_dict
     elif isinstance(obj, list):
         new_list = []
         for item in obj:
-            new_list.append(recursive_replace_uid(item))
+            new_list.append(recursive_replace_uid(item, users, teams))
         return new_list
     else:
         return obj
 
-# main
-solutions = get_solutions()
-(tables_names, teams_table) = get_tables()
-user_names = get_users()
-# print(teamsTable)
-teams_names = get_teams()
-sol = recursive_replace_uid(solutions)
-TN = recursive_replace_uid(tables_names)
+def write_permissions_to_csv(solutions, tables, field_permissions, users, teams, dest_folder):
+    """Write permissions data to CSV file."""
+    dest_folder.mkdir(parents=True, exist_ok=True)
+    permissions_file = dest_folder / "permissions.csv"
+    
+    with permissions_file.open("w", newline='', encoding="utf-8-sig") as file:
+        csv_writer = csv.writer(file)
+        
+        # Write headers
+        headers = [
+            "Type", "Solution", "Table", "Field", "level", "members", "teams",
+            "members_read", "members_write", "teams_read", "teams_write",
+            "owners", "private_to", "level_read", "level_write"
+        ]
+        csv_writer.writerow(headers)
+        
+        # Write solutions
+        for solution_id, solution in solutions.items():
+            row = [
+                "solution",
+                solution['name'],
+                "",
+                "",
+                solution['permissions'].get('level', ''),
+                solution['permissions'].get('members', ''),
+                solution['permissions'].get('teams', ''),
+                "",  # members_read
+                "",  # members_write
+                "",  # teams_read
+                "",  # teams_write
+                solution['permissions'].get('owners', ''),
+                solution['permissions'].get('private_to', ''),
+                "",  # level_read
+                ""   # level_write
+            ]
+            csv_writer.writerow(row)
+        
+        # Write tables
+        for table_id, table in tables.items():
+            row = [
+                "Table",
+                table['solution'],
+                table['name'],
+                "",
+                table['permissions'].get('level', ''),
+                table['permissions'].get('members', ''),
+                table['permissions'].get('teams', ''),
+                "",  # members_read
+                "",  # members_write
+                "",  # teams_read
+                "",  # teams_write
+                table['permissions'].get('owners', ''),
+                table['permissions'].get('private_to', ''),
+                "",  # level_read
+                ""   # level_write
+            ]
+            csv_writer.writerow(row)
+        
+        # Write field permissions
+        for field in field_permissions:
+            row = [
+                "field",
+                field['solution'],
+                field['table'],
+                field['field'],
+                "",  # level
+                "",  # members
+                "",  # teams
+                field['read'].get('members', ''),
+                field['write'].get('members', ''),
+                field['read'].get('teams', ''),
+                field['write'].get('teams', ''),
+                field.get('owners', ''),
+                field.get('private_to', ''),
+                field['read']['audience'],
+                field['write']['audience']
+            ]
+            csv_writer.writerow(row)
 
 
-field_permissions = get_fields_permission()
-field_perm = recursive_replace_uid(field_permissions)
-dest_folder.mkdir(parents=True, exist_ok=True)
-permissions_file = dest_folder / "permissions.csv"
-with permissions_file.open("w", newline='', encoding="utf-8-sig") as file:
-    csv_writer = csv.writer(file)
-    # Write headers
-    csv_writer.writerow(["Type", "Solution", "Table", "Field", "level","members", "teams", "members_read","members_write","teams_read", "teams_write", "owners", "private_to","level_read", "level_write"])
-    # Write solutions
-    for (k, i) in sol.items():
-        type="solution"
-        solution=i['name']
-        table=""
-        field=""
-        members_read = ""
-        members_write = ""
-        teams_read = ""
-        teams_write = ""
-        members = i['permissions'].get('members', '')
-        level = i['permissions'].get('level', '')
-        teams = i['permissions'].get('teams', '')
-        owners = i['permissions'].get('owners', '')
-        private_to = i['permissions'].get('private_to', '')
-        level_read = ""
-        level_write = ""
-        csv_writer.writerow([type, solution, table, field,level, members,teams, members_read,members_write, teams_read, teams_write, owners, private_to])
-    # Write tables
-    for (k, i) in TN.items():
-        #if i['permissions']['level'] != 'all_members':
-        type="Table"
-        solution=i['solution']
-        table=i['name']
-        field=""
-        level=""
-        members_read = ""
-        members_write = ""
-        teams_read = ""
-        teams_write = ""
-        members = i['permissions'].get('members', '')    
-        teams = i['permissions'].get('teams', '')
-        level = i['permissions'].get('level', '')
-        permissions_metadata = i['permissions'].get('permissions_metadata', '')
-        level_read = ""
-        level_write = ""
-        csv_writer.writerow([type, solution, table, field,level, members,teams, members_read,members_write, teams_read, teams_write, owners, private_to])
-    # Write field permissions
-    for fld in field_perm:
-        members=""
-        level=""
-        teams=""
-        type="field"
-        solution=fld['solution']
-        table=fld['table']
-        field=fld['field']
-        level_read = fld['read']['audience']
-        members_read = fld['read'].get('members', '')
-        level_write = fld['write']['audience']
-        members_write = fld['write'].get('members', '')
-        teams_read = fld['read'].get('teams', '')
-        teams_write = fld['write'].get('teams', '')
-        owners = fld.get('owners', '')
-        private_to = fld.get('private_to', '')
-        csv_writer.writerow([type, solution, table, field,level, members,teams, members_read,members_write, teams_read, teams_write, owners, private_to,level_read,level_write])
-        #print([type, solution, table, field,level, members,teams, members_read,members_write, teams_read, teams_write, owners, private_to,level_read,level_write])
+def main():
+    """Main execution function."""
+    print("Starting SmartSuite Permissions Audit...")
+    
+    # Fetch data from API
+    solutions = get_solutions()
+    if not solutions:
+        print("Failed to load solutions. Exiting.")
+        return
+    
+    tables, teams_table_id = get_tables(solutions)
+    if not tables:
+        print("Failed to load tables. Exiting.")
+        return
+    
+    users = get_users()
+    teams = get_teams(teams_table_id)
+    
+    # Replace IDs with names
+    solutions_with_names = recursive_replace_uid(solutions, users, teams)
+    tables_with_names = recursive_replace_uid(tables, users, teams)
+    
+    # Get field permissions
+    field_permissions = get_fields_permission(tables)
+    field_permissions_with_names = recursive_replace_uid(field_permissions, users, teams)
+    
+    # Write to CSV
+    write_permissions_to_csv(
+        solutions_with_names, 
+        tables_with_names, 
+        field_permissions_with_names, 
+        users, 
+        teams, 
+        DEST_FOLDER
+    )
+    
+    print(f"Permissions audit completed. Results saved to: {DEST_FOLDER / 'permissions.csv'}")
+
+
+if __name__ == "__main__":
+    main()
