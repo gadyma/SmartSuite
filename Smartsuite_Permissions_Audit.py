@@ -1,13 +1,16 @@
-# python3 -m pip install requests
-# Version 1.1b - Permissions Export
+# python3 -m pip install requests google-api-python-client google-auth
+# Version 1.2 - Permissions Export → Google Sheet
 
 import requests
 import json
 import os
-from datetime import datetime
-from pathlib import Path
 import sys
-import csv
+import argparse
+import importlib.util
+from datetime import datetime
+
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
 
 # Secrets
 """
@@ -17,23 +20,33 @@ import csv
  ACCOUNT_ID
 """
 
-# Secrets
 # ================= CONFIG IMPORT =================
-script_dir = os.path.dirname(os.path.abspath(__file__))
-home_dir = os.path.expanduser('~')
-for path in [script_dir, home_dir]:
-    if path not in sys.path:
-        sys.path.insert(0, path)
-try:
-    from SmartsuiteConfig import TOKEN, ACCOUNT_ID,DEST_FOLDERPERM
-except ImportError as e:
-    print(f"Error: Could not import 'SmartsuiteConfig.py': {e}")
-    print("Please ensure the config file exists in the script directory or home directory.")
-    sys.exit(1)
+def load_config(path):
+    path = os.path.expanduser(path)
+    if not os.path.exists(path):
+        print(f"Error: config file not found: {path}")
+        sys.exit(1)
+    spec = importlib.util.spec_from_file_location("SmartsuiteConfig", path)
+    mod  = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
+parser = argparse.ArgumentParser(description="SmartSuite Permissions Audit")
+parser.add_argument("--config", required=True, metavar="PATH", help="Path to SmartsuiteConfig.py")
+args = parser.parse_args()
+cfg = load_config(args.config)
 
-dest_folder = DEST_FOLDERPERM
-print (dest_folder)
+TOKEN                       = cfg.TOKEN
+ACCOUNT_ID                  = cfg.ACCOUNT_ID
+GOOGLE_SERVICE_ACCOUNT_FILE = cfg.GOOGLE_SERVICE_ACCOUNT_FILE
+GOOGLE_SHEET_PERMISSIONS_ID = cfg.GOOGLE_SHEET_PERMISSIONS_ID
+
+# Google Sheets client
+_creds = service_account.Credentials.from_service_account_file(
+    GOOGLE_SERVICE_ACCOUNT_FILE,
+    scopes=['https://www.googleapis.com/auth/spreadsheets']
+)
+sheets_svc = build('sheets', 'v4', credentials=_creds)
 # Param
 base_url = "https://app.smartsuite.com/api/"
 tk = "Token " + TOKEN
@@ -221,65 +234,53 @@ TN = recursive_replace_uid(tables_names)
 
 field_permissions = get_fields_permission()
 field_perm = recursive_replace_uid(field_permissions)
-dest_folder.mkdir(parents=True, exist_ok=True)
-permissions_file = dest_folder / "permissions.csv"
-with permissions_file.open("w", newline='', encoding="utf-8-sig") as file:
-    csv_writer = csv.writer(file)
-    # Write headers
-    csv_writer.writerow(["Type", "Solution", "Table", "Field", "level","members", "teams", "members_read","members_write","teams_read", "teams_write", "owners", "private_to","level_read", "level_write"])
-    # Write solutions
-    for (k, i) in sol.items():
-        type="solution"
-        solution=i['name']
-        table=""
-        field=""
-        members_read = ""
-        members_write = ""
-        teams_read = ""
-        teams_write = ""
-        members = i['permissions'].get('members', '')
-        level = i['permissions'].get('level', '')
-        teams = i['permissions'].get('teams', '')
-        owners = i['permissions'].get('owners', '')
-        private_to = i['permissions'].get('private_to', '')
-        level_read = ""
-        level_write = ""
-        csv_writer.writerow([type, solution, table, field,level, members,teams, members_read,members_write, teams_read, teams_write, owners, private_to])
-    # Write tables
-    for (k, i) in TN.items():
-        #if i['permissions']['level'] != 'all_members':
-        type="Table"
-        solution=i['solution']
-        table=i['name']
-        field=""
-        level=""
-        members_read = ""
-        members_write = ""
-        teams_read = ""
-        teams_write = ""
-        members = i['permissions'].get('members', '')    
-        teams = i['permissions'].get('teams', '')
-        level = i['permissions'].get('level', '')
-        permissions_metadata = i['permissions'].get('permissions_metadata', '')
-        level_read = ""
-        level_write = ""
-        csv_writer.writerow([type, solution, table, field,level, members,teams, members_read,members_write, teams_read, teams_write, owners, private_to])
-    # Write field permissions
-    for fld in field_perm:
-        members=""
-        level=""
-        teams=""
-        type="field"
-        solution=fld['solution']
-        table=fld['table']
-        field=fld['field']
-        level_read = fld['read']['audience']
-        members_read = fld['read'].get('members', '')
-        level_write = fld['write']['audience']
-        members_write = fld['write'].get('members', '')
-        teams_read = fld['read'].get('teams', '')
-        teams_write = fld['write'].get('teams', '')
-        owners = fld.get('owners', '')
-        private_to = fld.get('private_to', '')
-        csv_writer.writerow([type, solution, table, field,level, members,teams, members_read,members_write, teams_read, teams_write, owners, private_to,level_read,level_write])
-        #print([type, solution, table, field,level, members,teams, members_read,members_write, teams_read, teams_write, owners, private_to,level_read,level_write])
+
+HEADERS = ["Type", "Solution", "Table", "Field", "level", "members", "teams",
+           "members_read", "members_write", "teams_read", "teams_write",
+           "owners", "private_to", "level_read", "level_write"]
+
+all_rows = [HEADERS]
+
+for (k, i) in sol.items():
+    members = i['permissions'].get('members', '')
+    level   = i['permissions'].get('level', '')
+    teams   = i['permissions'].get('teams', '')
+    owners  = i['permissions'].get('owners', '')
+    private_to = i['permissions'].get('private_to', '')
+    all_rows.append(["solution", i['name'], "", "", level, members, teams,
+                     "", "", "", "", owners, private_to, "", ""])
+
+for (k, i) in TN.items():
+    members = i['permissions'].get('members', '')
+    teams   = i['permissions'].get('teams', '')
+    level   = i['permissions'].get('level', '')
+    owners  = i['permissions'].get('owners', '')
+    private_to = i['permissions'].get('private_to', '')
+    all_rows.append(["Table", i['solution'], i['name'], "", level, members, teams,
+                     "", "", "", "", owners, private_to, "", ""])
+
+for fld in field_perm:
+    level_read    = fld['read']['audience']
+    members_read  = fld['read'].get('members', '')
+    level_write   = fld['write']['audience']
+    members_write = fld['write'].get('members', '')
+    teams_read    = fld['read'].get('teams', '')
+    teams_write   = fld['write'].get('teams', '')
+    owners        = fld.get('owners', '')
+    private_to    = fld.get('private_to', '')
+    all_rows.append(["field", fld['solution'], fld['table'], fld['field'], "",
+                     "", "", members_read, members_write, teams_read, teams_write,
+                     owners, private_to, level_read, level_write])
+
+# ---- Update Google Sheet ----
+print(f"Updating Google Sheet {GOOGLE_SHEET_PERMISSIONS_ID} ...")
+sheets_svc.spreadsheets().values().clear(
+    spreadsheetId=GOOGLE_SHEET_PERMISSIONS_ID, range='A:ZZZ'
+).execute()
+sheets_svc.spreadsheets().values().update(
+    spreadsheetId=GOOGLE_SHEET_PERMISSIONS_ID,
+    range='A1',
+    valueInputOption='RAW',
+    body={'values': [[str(c) if c is not None else '' for c in row] for row in all_rows]}
+).execute()
+print(f"Google Sheet updated: {len(all_rows)-1} data rows written.")

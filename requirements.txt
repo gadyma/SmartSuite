@@ -1,0 +1,6 @@
+requests
+google-api-python-client
+google-auth
+google-auth-httplib2
+httplib2
+boto3
