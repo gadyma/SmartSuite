@@ -127,33 +127,35 @@ python3 Backup_SmartSuite.py --config ~/SmartsuiteConfig.py
 
 Audits and exports all SmartSuite permission settings to a Google Sheet and a local CSV:
 
-- Fetches all **solutions** and their access level, members, teams, owners, and private settings
-- Fetches all **tables** and their access level, members, and teams
-- Fetches **field-level permissions** (read/write audience, specific members and teams) for every field in every table
-- Resolves all internal user IDs and team IDs to human-readable names (full name or email)
-- Writes output to:
-  - A **Google Sheet** (clears and rewrites on every run)
-  - A **local CSV** at `DEST_FOLDERPERM/permissions.csv` as a fallback
+- Fetches all **solutions** and their access level, members, teams, roles, owners, and private settings
+- Fetches all **tables** and their access level, members, teams, and roles
+- Fetches **field-level permissions** (read/write audience, specific members, teams, and roles) for every field in every table — fetched in parallel for speed
+- Resolves all internal user IDs and team IDs to human-readable names; appends user type (e.g. `Alice (Admin)`)
+- Writes output to a **Google Sheet** (clears and rewrites on every run, with a timestamp row and a frozen/bolded header)
 
 ### Output columns
 
 | Column | Description |
 |---|---|
-| Type | `solution`, `Table`, or `field` |
+| Type | `solution`, `table`, or `field` |
 | Solution | Solution (workspace) name |
 | Table | Table name (empty for solution rows) |
-| Field | Field name (only for field rows) |
-| level | Permission level (e.g. `all_members`, `specific`) |
-| members | Members with access |
-| teams | Teams with access |
+| Field | Field name (field rows only) |
+| Field Slug | Internal field slug (field rows only) |
+| audience | Access level for solution/table rows (e.g. `all_members`, `specific`) |
+| members | Members with access (solution/table rows) |
+| teams | Teams with access (solution/table rows) |
+| roles | Roles with access (solution/table rows) |
+| audience_read | Read audience (field rows) |
 | members_read | Members with read access (field rows) |
-| members_write | Members with write access (field rows) |
 | teams_read | Teams with read access (field rows) |
+| roles_read | Roles with read access (field rows) |
+| audience_write | Write audience (field rows) |
+| members_write | Members with write access (field rows) |
 | teams_write | Teams with write access (field rows) |
+| roles_write | Roles with write access (field rows) |
 | owners | Owners |
 | private_to | Private access setting |
-| level_read | Read audience (field rows) |
-| level_write | Write audience (field rows) |
 
 ### Usage
 

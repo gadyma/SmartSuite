@@ -1,24 +1,17 @@
 # python3 -m pip install requests google-api-python-client google-auth
-# Version 1.2 - Permissions Export → Google Sheet
+# Version 2.0 - Permissions Export → Google Sheet
 
 import requests
-import json
 import os
 import sys
 import argparse
 import importlib.util
+import time
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-
-# Secrets
-"""
-# Generating an API Key - https://help.smartsuite.com/en/articles/4855681-generating-an-api-key
-# Create a SmartsuiteConfig.py file and put in it
- TOKEN=dest_folder
- ACCOUNT_ID
-"""
 
 # ================= CONFIG IMPORT =================
 def load_config(path):
@@ -41,25 +34,30 @@ ACCOUNT_ID                  = cfg.ACCOUNT_ID
 GOOGLE_SERVICE_ACCOUNT_FILE = cfg.GOOGLE_SERVICE_ACCOUNT_FILE
 GOOGLE_SHEET_PERMISSIONS_ID = cfg.GOOGLE_SHEET_PERMISSIONS_ID
 
-# Google Sheets client
 _creds = service_account.Credentials.from_service_account_file(
     GOOGLE_SERVICE_ACCOUNT_FILE,
     scopes=['https://www.googleapis.com/auth/spreadsheets']
 )
 sheets_svc = build('sheets', 'v4', credentials=_creds)
-# Param
+
 base_url = "https://app.smartsuite.com/api/"
-tk = "Token " + TOKEN
-# the account id you take the first part in the URL https://app.smartsuite.com/ACCOUNTID/solution/SOLUTIONID
-headers = {"accept": "application/json", "Authorization": str(tk), "ACCOUNT-ID": ACCOUNT_ID}
+headers  = {"accept": "application/json", "Authorization": "Token " + TOKEN, "ACCOUNT-ID": ACCOUNT_ID}
 
-# if you want to create it in timestamp folder:
-# destFolder=destFolder + datetime.now().strftime("%Y-%m-%d %H:%M:%S") +"/"
+USER_TYPE_LABEL = {'1': 'Member', '2': 'Admin', '3': 'Guest'}
 
 
-def Merge(dict1, dict2): 
-    res = dict1 | dict2
-    return res 
+def api_get(url, max_retries=6):
+    delay = 2
+    for attempt in range(max_retries):
+        resp = requests.get(url, headers=headers)
+        if resp.status_code != 429:
+            return resp
+        wait = int(resp.headers.get('Retry-After', delay))
+        print(f"Rate limited on {url} — retrying in {wait}s (attempt {attempt + 1}/{max_retries})")
+        time.sleep(wait)
+        delay = min(delay * 2, 60)
+    return resp
+
 
 def get_label_from_slug(data, field_slug):
     for field in data:
@@ -69,211 +67,202 @@ def get_label_from_slug(data, field_slug):
 
 
 def get_solutions():
-    url_s = base_url + "v1/solutions/"
-    resp_s = requests.get(url_s, headers=headers)
-    if resp_s.status_code != 200:
-        print('error: ' + str(resp_s.status_code))
-    else:
-        print('Solutions List Loaded Successfully')
-        data_s = resp_s.json()
+    resp = requests.get(base_url + "v1/solutions/", headers=headers)
+    if resp.status_code != 200:
+        print(f"Error loading solutions: {resp.status_code}")
+        sys.exit(1)
+    print('Solutions List Loaded Successfully')
     solutions = {}
-    solutions.clear
-    for s in data_s:
-        solution_info = {
-            'name': s['id'],
-            'name': s['name'],
-            'status': s['status'],
+    for s in resp.json():
+        solutions[s['id']] = {
+            'id':          s['id'],
+            'name':        s['name'],
+            'status':      s['status'],
             'permissions': s['permissions'],
         }
-        # print(solution_info)
-        solutions[s['id']] = solution_info
     return solutions
 
 
 def get_tables():
-    url_applications = base_url + "v1/applications/"
-    resp = requests.get(url_applications, headers=headers)
+    resp = requests.get(base_url + "v1/applications/", headers=headers)
     if resp.status_code != 200:
-        print("Can't load Table list error: " + str(resp.status_code))
-    else:
-        print('Tables List Loaded Successfully')
-        tables_data = resp.json()
+        print(f"Can't load Table list, error: {resp.status_code}")
+        sys.exit(1)
+    print('Tables List Loaded Successfully')
     tables = {}
-    tables.clear
-    team = None
-    for table in tables_data:
-        if table['solution'] in solutions:
-            table_info = {
-                'name': table['id'],
-                'name': table['name'],
-                'status': table['status'],
-                'solution': solutions[table['solution']]['name'],
-                'structure': table['structure'],
-                'permissions': table['permissions']
-            }
-            # print(table_info)
-            tables[table['id']] = table_info
-            # fixme!
-            if team is None and table['solution'] in solutions and solutions[table['solution']]['name'] == 'System' and table['name'] == 'Teams':
-                team = table['id']
-                print('Table Teamsfound')
+    team   = None
+    for table in resp.json():
+        if table['solution'] not in solutions:
+            continue
+        sol_name = solutions[table['solution']]['name']
+        tables[table['id']] = {
+            'id':          table['id'],
+            'name':        table['name'],
+            'status':      table['status'],
+            'solution':    sol_name,
+            'permissions': table['permissions'],
+        }
+        if team is None and sol_name == 'System' and table['name'] == 'Teams':
+            team = table['id']
+            print('Table Teams found')
     return tables, team
 
-def get_fields_permission():
-    field_permissions = []
-    for key, item in TN.items():
-        table_id=key
-        table_name=item['name']
-        solution_name=item['solution']
-        url_applications = base_url + "v1/applications/" + table_id
-        resp = requests.get(url_applications, headers=headers)
-        if resp.status_code != 200:
-            print("Can't load Table field error: " + str(resp.status_code))
-        else:
-            print(f'Table: {table_id} fields Loaded Successfully')
-            fields_data = resp.json()
-            for p in fields_data['field_permissions']:
-                print(f"{p}\n")
-                #print(fields_data)
-                field_info = { 
-                    'field_slug': p['field_slug'],
-                    'solution': solution_name,
-                    'table': table_name,
-                    'field': get_label_from_slug(fields_data['structure'], p['field_slug']),
-                    'read': p['read'],
-                    'write': p['write']
-                }
-                if field_info['field'] != None:
-                    field_permissions.append(field_info)
-    return field_permissions
 
 def get_users():
-    url_u = base_url + "v1/applications/members/records/list/"
-    resp2 = requests.post(url_u, headers=headers)
-    if resp2.status_code != 200:
-        print('error: ' + str(resp2.status_code))
-    else:
-        print('Users List Loaded Successfully')
-        data_s = resp2.json()
-        # respuser=resp2.content.decode('UTF-8')
+    resp = requests.post(base_url + "v1/applications/members/records/list/", headers=headers)
+    if resp.status_code != 200:
+        print(f"Error loading users: {resp.status_code}")
+        sys.exit(1)
+    print('Users List Loaded Successfully')
     users = {}
-    users.clear
-    for s in data_s['items']:
-        if not s['deleted_date']['date'] and s['type'] != '6':  # not deleted and not system account
-            user_info = {
-                'id': s['id'],
-                'full_name': s['full_name']['sys_root'],
-                'email': s['email'][0],
-                'type': s['type'],
-                'role': s['role'],
+    for s in resp.json()['items']:
+        if not s['deleted_date']['date'] and s['type'] != '6':
+            users[s['id']] = {
+                'id':         s['id'],
+                'full_name':  s['full_name']['sys_root'],
+                'email':      s['email'][0],
+                'type':       s['type'],
+                'role':       s['role'],
                 'last_login': s['last_login']['date'],
-                'locale': s['locale']
+                'locale':     s['locale'],
             }
-            # print(user_info)
-            users[s['id']] = user_info
     return users
 
+
 def get_teams():
-    url = base_url + 'v1/applications/' + teams_table + '/records/list/?offet=0'
-    params = {"offset": 0}
-    response = requests.post(url, params=params, headers=headers)
-    if response.status_code == 200:
-        print('Teams List Loaded Successfully')
-        team_data = response.json()
-    else:
-        print(f"Request failed with status code {response.status_code}")
-        print(response.text)
+    resp = requests.post(
+        base_url + 'v1/applications/' + teams_table + '/records/list/',
+        params={"offset": 0},
+        headers=headers,
+    )
+    if resp.status_code != 200:
+        print(f"Error loading teams: {resp.status_code}\n{resp.text}")
+        sys.exit(1)
+    print('Teams List Loaded Successfully')
     teams = {}
-    teams.clear
-    for team in team_data['items']:
-        team_info = {
-            'name': team['id'],
-            'name': team['name'],
-            'status': team['status'],
-            'members': team['members']
+    for team in resp.json()['items']:
+        teams[team['id']] = {
+            'id':      team['id'],
+            'name':    team['name'],
+            'status':  team['status'],
+            'members': team['members'],
         }
-        # print(team_info)
-        teams[team['id']] = team_info
     return teams
+
+
+def get_fields_permission():
+    def fetch_table(key, item):
+        resp = api_get(base_url + "v1/applications/" + key)
+        if resp.status_code != 200:
+            print(f"Can't load fields for table {key}: {resp.status_code}")
+            return []
+        print(f'Table: {key} fields Loaded Successfully')
+        data = resp.json()
+        results = []
+        for p in data.get('field_permissions', []):
+            label = get_label_from_slug(data['structure'], p['field_slug'])
+            if label is None:
+                continue
+            results.append({
+                'field_slug': p['field_slug'],
+                'solution':   item['solution'],
+                'table':      item['name'],
+                'field':      label,
+                'read':       p['read'],
+                'write':      p['write'],
+                'owners':     p.get('owners', ''),
+                'private_to': p.get('private_to', ''),
+            })
+        return results
+
+    field_permissions = []
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {}
+        for k, v in TN.items():
+            futures[executor.submit(fetch_table, k, v)] = k
+            time.sleep(0.4)
+        for future in as_completed(futures):
+            field_permissions.extend(future.result())
+    return field_permissions
+
 
 def recursive_replace_uid(obj):
     if isinstance(obj, str):
-        new_val = obj
         if obj in user_names:
-            if user_names[obj]['full_name'] == '':
-                new_val = user_names[obj]['email']
-            else:
-                new_val = user_names[obj]['full_name']
-            # print(f"Replacing {obj} with {new_val}")
+            u     = user_names[obj]
+            name  = u['full_name'] or u['email']
+            label = USER_TYPE_LABEL.get(u['type'], '')
+            return f"{name} ({label})" if label else name
         if obj in teams_names:
-            new_val = teams_names[obj]['name']
-            # print(obj, new_val)
-        return new_val
+            return teams_names[obj]['name']
+        return obj
     elif isinstance(obj, dict):
-        new_dict = {}
-        for key, value in obj.items():
-            new_dict[key] = recursive_replace_uid(value)
-        return new_dict
+        return {k: recursive_replace_uid(v) for k, v in obj.items()}
     elif isinstance(obj, list):
-        new_list = []
-        for item in obj:
-            new_list.append(recursive_replace_uid(item))
-        return new_list
+        return [recursive_replace_uid(item) for item in obj]
     else:
         return obj
 
-# main
-solutions = get_solutions()
-(tables_names, teams_table) = get_tables()
-user_names = get_users()
-# print(teamsTable)
-teams_names = get_teams()
-sol = recursive_replace_uid(solutions)
-TN = recursive_replace_uid(tables_names)
 
+# ── main ──────────────────────────────────────────────────────────────────────
+solutions             = get_solutions()
+(tables_names, teams_table) = get_tables()
+user_names            = get_users()
+teams_names           = get_teams()
+sol                   = recursive_replace_uid(solutions)
+TN                    = recursive_replace_uid(tables_names)
 
 field_permissions = get_fields_permission()
-field_perm = recursive_replace_uid(field_permissions)
+field_perm        = recursive_replace_uid(field_permissions)
 
-HEADERS = ["Type", "Solution", "Table", "Field", "level", "members", "teams",
-           "members_read", "members_write", "teams_read", "teams_write",
-           "owners", "private_to", "level_read", "level_write"]
+HEADERS = [
+    "Type", "Solution", "Table", "Field", "Field Slug",
+    "audience",       "members",       "teams",       "roles",
+    "audience_read",  "members_read",  "teams_read",  "roles_read",
+    "audience_write", "members_write", "teams_write", "roles_write",
+    "owners", "private_to",
+]
 
-all_rows = [HEADERS]
+timestamp_row = [f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M')}"]
+all_rows = [timestamp_row, HEADERS]
 
 for (k, i) in sol.items():
-    members = i['permissions'].get('members', '')
-    level   = i['permissions'].get('level', '')
-    teams   = i['permissions'].get('teams', '')
-    owners  = i['permissions'].get('owners', '')
-    private_to = i['permissions'].get('private_to', '')
-    all_rows.append(["solution", i['name'], "", "", level, members, teams,
-                     "", "", "", "", owners, private_to, "", ""])
+    p = i['permissions']
+    all_rows.append([
+        "solution", i['name'], "", "", "",
+        p.get('level', ''), p.get('members', ''), p.get('teams', ''), p.get('roles', ''),
+        "", "", "", "",
+        "", "", "", "",
+        p.get('owners', ''), p.get('private_to', ''),
+    ])
 
 for (k, i) in TN.items():
-    members = i['permissions'].get('members', '')
-    teams   = i['permissions'].get('teams', '')
-    level   = i['permissions'].get('level', '')
-    owners  = i['permissions'].get('owners', '')
-    private_to = i['permissions'].get('private_to', '')
-    all_rows.append(["Table", i['solution'], i['name'], "", level, members, teams,
-                     "", "", "", "", owners, private_to, "", ""])
+    p = i['permissions']
+    all_rows.append([
+        "table", i['solution'], i['name'], "", "",
+        p.get('level', ''), p.get('members', ''), p.get('teams', ''), p.get('roles', ''),
+        "", "", "", "",
+        "", "", "", "",
+        p.get('owners', ''), p.get('private_to', ''),
+    ])
 
 for fld in field_perm:
-    level_read    = fld['read']['audience']
-    members_read  = fld['read'].get('members', '')
-    level_write   = fld['write']['audience']
-    members_write = fld['write'].get('members', '')
-    teams_read    = fld['read'].get('teams', '')
-    teams_write   = fld['write'].get('teams', '')
-    owners        = fld.get('owners', '')
-    private_to    = fld.get('private_to', '')
-    all_rows.append(["field", fld['solution'], fld['table'], fld['field'], "",
-                     "", "", members_read, members_write, teams_read, teams_write,
-                     owners, private_to, level_read, level_write])
+    r = fld['read']
+    w = fld['write']
+    all_rows.append([
+        "field", fld['solution'], fld['table'], fld['field'], fld['field_slug'],
+        "", "", "", "",
+        r.get('audience', ''), r.get('members', ''), r.get('teams', ''), r.get('roles', ''),
+        w.get('audience', ''), w.get('members', ''), w.get('teams', ''), w.get('roles', ''),
+        fld.get('owners', ''), fld.get('private_to', ''),
+    ])
 
-# ---- Update Google Sheet ----
+# ── Update Google Sheet ────────────────────────────────────────────────────────
 print(f"Updating Google Sheet {GOOGLE_SHEET_PERMISSIONS_ID} ...")
+
+spreadsheet = sheets_svc.spreadsheets().get(spreadsheetId=GOOGLE_SHEET_PERMISSIONS_ID).execute()
+sheet_id    = spreadsheet['sheets'][0]['properties']['sheetId']
+
 sheets_svc.spreadsheets().values().clear(
     spreadsheetId=GOOGLE_SHEET_PERMISSIONS_ID, range='A:ZZZ'
 ).execute()
@@ -283,4 +272,32 @@ sheets_svc.spreadsheets().values().update(
     valueInputOption='RAW',
     body={'values': [[str(c) if c is not None else '' for c in row] for row in all_rows]}
 ).execute()
-print(f"Google Sheet updated: {len(all_rows)-1} data rows written.")
+
+sheets_svc.spreadsheets().batchUpdate(
+    spreadsheetId=GOOGLE_SHEET_PERMISSIONS_ID,
+    body={'requests': [
+        {
+            'updateSheetProperties': {
+                'properties': {
+                    'sheetId':        sheet_id,
+                    'gridProperties': {'frozenRowCount': 2},
+                },
+                'fields': 'gridProperties.frozenRowCount',
+            }
+        },
+        {
+            'repeatCell': {
+                'range': {'sheetId': sheet_id, 'startRowIndex': 1, 'endRowIndex': 2},
+                'cell': {
+                    'userEnteredFormat': {
+                        'textFormat':      {'bold': True},
+                        'backgroundColor': {'red': 0.85, 'green': 0.85, 'blue': 0.85},
+                    }
+                },
+                'fields': 'userEnteredFormat(textFormat,backgroundColor)',
+            }
+        },
+    ]}
+).execute()
+
+print(f"Google Sheet updated: {len(all_rows) - 2} data rows written.")
