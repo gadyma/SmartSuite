@@ -4,6 +4,8 @@
 import sys
 sys.stdout.reconfigure(line_buffering=True)
 import argparse, importlib.util, os, requests, json, time
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, date, timedelta
 
 try:
@@ -32,8 +34,9 @@ def load_config(path):
     return mod
 
 # ── SETTINGS ──────────────────────────────────────────────────────────────────
-TIMEOUT        = 30
-RETRY_ATTEMPTS = 3
+TIMEOUT             = 30
+RETRY_ATTEMPTS      = 5
+CONCURRENT_WORKERS  = 5
 
 # Google Sheets stores dates as days since this epoch
 _SHEETS_EPOCH = date(1899, 12, 30)
@@ -73,44 +76,66 @@ def fetch_records(app_id, key_field):
             rec_map[k] = rec
     return key_map, rec_map
 
-def send_slack(message):
-    if not WEBHOOK_URL:
+def send_slack(message, webhook_url):
+    if not webhook_url:
         return
     try:
-        requests.post(WEBHOOK_URL, json={"text": message},
+        requests.post(webhook_url, json={"text": message},
                       headers={"Content-Type": "application/json"}, timeout=10)
     except Exception as e:
         print(f"  Slack notification failed: {e}")
 
-def patch_record(app_id, record_id, payload):
-    url = f"{BASE_URL}/applications/{app_id}/records/{record_id}/"
-    r = requests.patch(url, headers=ss_headers, json=payload, timeout=TIMEOUT)
-    r.raise_for_status()
+def _ss_request(method, url, **kwargs):
+    for attempt in range(RETRY_ATTEMPTS):
+        r = method(url, headers=ss_headers, timeout=TIMEOUT, **kwargs)
+        if r.status_code == 429:
+            wait = int(r.headers.get("Retry-After", 2 ** attempt))
+            time.sleep(wait)
+            continue
+        r.raise_for_status()
+        return r
+    r.raise_for_status()  # raise after exhausting retries
 
-_SELECT_TYPES = {"statusfield", "selectionfield", "singleselectfield"}
+def patch_record(app_id, record_id, payload):
+    _ss_request(requests.patch,
+                f"{BASE_URL}/applications/{app_id}/records/{record_id}/",
+                json=payload)
+
+def create_record(app_id, payload):
+    r = _ss_request(requests.post,
+                    f"{BASE_URL}/applications/{app_id}/records/",
+                    json=payload)
+    return r.json()
+
+_SELECT_TYPES  = {"statusfield", "selectionfield", "singleselectfield"}
+_DATE_TYPES    = {"datefield", "duedatefield"}
+_RICHTEXT_TYPES = {"richtextareafield"}
 
 def fetch_app_meta(app_id):
-    """Fetch app structure once; return (label_to_slug, select_maps).
+    """Fetch app structure once; return (label_to_slug, select_maps, field_types).
 
     label_to_slug : {SmartSuite field label: slug}
     select_maps   : {slug: {option label: value code}} for single-select fields
+    field_types   : {slug: field_type_string} for every field
     """
     r = requests.get(f"{BASE_URL}/applications/{app_id}/", headers=ss_headers, timeout=TIMEOUT)
     r.raise_for_status()
-    label_to_slug, select_maps = {}, {}
+    label_to_slug, select_maps, field_types = {}, {}, {}
     for f in r.json().get("structure", []):
         slug  = f.get("slug", "")
         label = f.get("label", "")
         ftype = f.get("field_type", "")
         if slug and label:
             label_to_slug[label] = slug
+        if slug and ftype:
+            field_types[slug] = ftype
         if ftype in _SELECT_TYPES and slug:
             choices = f.get("params", {}).get("choices", [])
             select_maps[slug] = {
                 ch["label"]: ch["value"]
                 for ch in choices if "label" in ch and "value" in ch
             }
-    return label_to_slug, select_maps
+    return label_to_slug, select_maps, field_types
 
 # ── GOOGLE SHEETS CLIENT ──────────────────────────────────────────────────────
 import httplib2
@@ -145,10 +170,35 @@ def _norm_date(s):
     """Normalise ISO date strings so '...Z' and '....000Z' compare equal."""
     return s.replace(".000Z", "Z") if isinstance(s, str) else s
 
-def coerce(value, slug, col_name="", select_map=None):
+def _prosemirror_to_text(node):
+    """Recursively extract plain text from a ProseMirror doc node."""
+    if not isinstance(node, dict):
+        return ""
+    if node.get("type") == "text":
+        return node.get("text", "")
+    parts = [_prosemirror_to_text(c) for c in node.get("content", [])]
+    if node.get("type") in ("paragraph", "heading", "blockquote", "listItem", "bulletList", "orderedList"):
+        return "".join(parts) + "\n"
+    return "".join(parts)
+
+def _str_to_richtext(text):
+    """Wrap a plain string in ProseMirror doc format for SmartSuite richtextareafield."""
+    return {
+        "data": {
+            "type": "doc",
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": text}] if text else []
+                }
+            ]
+        }
+    }
+
+def coerce(value, slug, col_name="", select_map=None, is_date=False, is_richtext=False):
     """Convert a Google Sheets cell value to a SmartSuite-compatible PATCH value."""
     hint = (slug + col_name).lower()
-    if _is_date_serial(value) and ("date" in hint or "due" in hint):
+    if _is_date_serial(value) and (is_date or "date" in hint or "due" in hint):
         d = _SHEETS_EPOCH + timedelta(days=int(value))
         return {"date": d.strftime("%Y-%m-%dT00:00:00.000Z"), "include_time": False}
     if isinstance(value, datetime):
@@ -156,46 +206,76 @@ def coerce(value, slug, col_name="", select_map=None):
     if isinstance(value, date):
         return {"date": value.strftime("%Y-%m-%dT00:00:00.000Z"), "include_time": False}
     if select_map and isinstance(value, str):
-        return select_map.get(value, value)  # translate label → value code; fall back to raw
+        if value in select_map:
+            return select_map[value]
+        # Case-insensitive fallback (e.g. sheet has "In progress", SmartSuite has "In Progress")
+        lower_map = {k.lower(): v for k, v in select_map.items()}
+        return lower_map.get(value.lower(), value)
+    if is_richtext and isinstance(value, str):
+        return _str_to_richtext(value)
     return value
 
 def current_comparable(ss_value):
     """Normalise a SmartSuite field value for equality comparison."""
-    if isinstance(ss_value, dict):   # datefield: {'date': ..., 'include_time': ...}
-        return _norm_date(ss_value.get("date") or "")
+    if isinstance(ss_value, dict):
+        if "data" in ss_value:   # richtextareafield
+            return _prosemirror_to_text(ss_value["data"]).rstrip("\n")
+        if "date" in ss_value:   # datefield / duedatefield
+            return _norm_date(ss_value["date"] or "")
+        if "value" in ss_value:  # statusfield / selectionfield / singleselectfield
+            return ss_value["value"] or ""
+        return ""
     return ss_value or ""
 
 def new_comparable(coerced):
     """Normalise a coerced sheet value the same way for comparison."""
     if isinstance(coerced, dict):
+        if "data" in coerced:    # richtextareafield
+            return _prosemirror_to_text(coerced["data"]).rstrip("\n")
         return _norm_date(coerced.get("date") or "")
     return coerced or ""
 
 # ── JOB RUNNER ────────────────────────────────────────────────────────────────
 def run_job(job, args):
-    name       = job["name"]
-    sheet_id   = job["sheet_id"]
-    tab_name   = job["tab_name"]
-    app_id     = job["app_id"]
-    key_column = job["key_column"]
-    key_field  = job["key_field"]
-    dry_run = job.get("dry_run", False) or args.dry_run
+    name         = job["name"]
+    sheet_id     = job["sheet_id"]
+    tab_name     = job["tab_name"]
+    app_id       = job["app_id"]
+    key_column   = job["key_column"]
+    key_field    = job["key_field"]
+    upsert          = job.get("upsert", False)
+    dry_run         = job.get("dry_run", False) or args.dry_run
+    rename_tpl      = job.get("rename_app")
+    exclude_columns = set(job.get("exclude_columns", []))
+    # Per-job Slack webhook; falls back to global WEBHOOK_URL if not specified.
+    # Set to None or omit to use global; set to False to disable Slack for this job.
+    slack_webhook = job.get("slack_webhook", WEBHOOK_URL)
 
     print(f"\n{'='*60}")
     print(f"Job: {name}{' [DRY RUN]' if dry_run else ''}")
 
-    label_to_slug, auto_select_maps = fetch_app_meta(app_id)
-    select_maps = {**auto_select_maps, **job.get("select_maps", {})}  # explicit config wins
+    # Optional app rename — {now} → current date/time
+    if rename_tpl:
+        new_name = rename_tpl.replace("{now}", datetime.now().strftime("%Y-%m-%d %H:%M"))
+        if not dry_run:
+            r = requests.patch(f"{BASE_URL}/applications/{app_id}/", headers=ss_headers,
+                               json={"name": new_name}, timeout=TIMEOUT)
+            r.raise_for_status()
+        print(f"  {'Would rename' if dry_run else 'Renamed'} app → {new_name!r}")
+
+    label_to_slug, auto_select_maps, field_types = fetch_app_meta(app_id)
+    select_maps = {**auto_select_maps, **job.get("select_maps", {})}
 
     rows = read_sheet(sheet_id, tab_name)
     print(f"Rows: {len(rows)}")
 
-    # Build slug-keyed field_map from config (values are SmartSuite field names).
-    # If field_map is omitted, auto-match sheet column headers to SmartSuite field labels.
+    # Build slug-keyed field_map. If omitted, auto-match sheet headers to SmartSuite labels.
     raw_fm = job.get("field_map")
     if raw_fm:
         field_map = {}
         for sheet_col, ss_name in raw_fm.items():
+            if sheet_col in exclude_columns:
+                continue
             slug = label_to_slug.get(ss_name)
             if not slug:
                 print(f"  Warning: SmartSuite field '{ss_name}' not found — skipping column '{sheet_col}'")
@@ -204,11 +284,16 @@ def run_job(job, args):
     else:
         lower_to_slug = {k.lower(): v for k, v in label_to_slug.items()}
         sheet_headers = list(rows[0].keys()) if rows else []
-        field_map = {h: lower_to_slug[h.lower()] for h in sheet_headers if h.lower() in lower_to_slug}
+        field_map = {h: lower_to_slug[h.lower()] for h in sheet_headers
+                     if h.lower() in lower_to_slug and h not in exclude_columns}
         print(f"  Auto-matched columns: {list(field_map.keys())}")
+
     key_map, rec_map = fetch_records(app_id, key_field)
 
-    updated = skipped = unchanged = errors = 0
+    # ── Classify every row into create / update / skip ─────────────────────────
+    to_create  = []   # [(key_value, payload)]
+    to_update  = []   # [(key_value, record_id, payload, changes)]
+    skipped = unchanged = 0
 
     for row in rows:
         key_raw   = row.get(key_column, "")
@@ -219,8 +304,20 @@ def run_job(job, args):
 
         record_id = key_map.get(key_value)
         if not record_id:
-            print(f"  Not found: {key_column}={key_value}")
-            skipped += 1
+            if not upsert:
+                skipped += 1
+                continue
+            create_payload = {}
+            for col, ss_slug in field_map.items():
+                raw = row.get(col, "")
+                if raw not in ("", None):
+                    ftype = field_types.get(ss_slug, "")
+                    create_payload[ss_slug] = coerce(raw, ss_slug, col, select_maps.get(ss_slug),
+                                                     is_date=(ftype in _DATE_TYPES),
+                                                     is_richtext=(ftype in _RICHTEXT_TYPES))
+            if key_field not in create_payload:
+                create_payload[key_field] = key_value
+            to_create.append((key_value, create_payload))
             continue
 
         ss_rec  = rec_map[key_value]
@@ -230,7 +327,10 @@ def run_job(job, args):
             raw = row.get(col, "")
             if raw in ("", None):
                 continue
-            coerced = coerce(raw, ss_slug, col, select_maps.get(ss_slug))
+            ftype   = field_types.get(ss_slug, "")
+            coerced = coerce(raw, ss_slug, col, select_maps.get(ss_slug),
+                             is_date=(ftype in _DATE_TYPES),
+                             is_richtext=(ftype in _RICHTEXT_TYPES))
             cur = current_comparable(ss_rec.get(ss_slug))
             nw  = new_comparable(coerced)
             if cur != nw:
@@ -239,33 +339,79 @@ def run_job(job, args):
 
         if not payload:
             unchanged += 1
-            continue
+        else:
+            to_update.append((key_value, record_id, payload, changes))
 
-        if dry_run:
+    # Show which fields are driving changes (helps catch false-positive comparisons)
+    if to_update:
+        field_counts = Counter(
+            c.strip().split(":")[0]
+            for _, _, _, chgs in to_update
+            for c in chgs
+        )
+        top = ", ".join(f"{col} ({n})" for col, n in field_counts.most_common(8))
+        print(f"  Fields with changes: {top}")
+
+    # ── Dry-run: just print what would happen ──────────────────────────────────
+    if dry_run:
+        for key_value, payload in to_create:
+            print(f"  Would create: {key_column}={key_value!r}")
+            for k, v in payload.items():
+                print(f"    {k}: {v!r}")
+        for key_value, _, _, changes in to_update:
             print(f"  #{key_value} would change:")
             for c in changes:
                 print(c)
-            updated += 1
-            continue
+        created, updated, errors = len(to_create), len(to_update), 0
+    else:
+        # ── Execute creates concurrently ───────────────────────────────────────
+        created = errors = 0
+        if to_create:
+            with ThreadPoolExecutor(max_workers=CONCURRENT_WORKERS) as ex:
+                futures = {ex.submit(create_record, app_id, p): kv for kv, p in to_create}
+                for fut in as_completed(futures):
+                    kv = futures[fut]
+                    try:
+                        fut.result()
+                        created += 1
+                    except Exception as e:
+                        print(f"  Error creating {kv!r}: {e}")
+                        errors += 1
+            print(f"  Created {created} records")
 
-        try:
-            patch_record(app_id, record_id, payload)
-            print(f"  Updated #{key_value}")
-            updated += 1
-        except Exception as e:
-            print(f"  Error patching #{key_value}: {e}")
-            errors += 1
+        # ── Execute updates concurrently ───────────────────────────────────────
+        updated = 0
+        if to_update:
+            with ThreadPoolExecutor(max_workers=CONCURRENT_WORKERS) as ex:
+                futures = {ex.submit(patch_record, app_id, rid, p): kv
+                           for kv, rid, p, _ in to_update}
+                for fut in as_completed(futures):
+                    kv = futures[fut]
+                    try:
+                        fut.result()
+                        updated += 1
+                    except Exception as e:
+                        print(f"  Error patching {kv!r}: {e}")
+                        errors += 1
+            print(f"  Updated {updated} records")
 
-    summary = f"{updated} {'would change' if dry_run else 'updated'}, {unchanged} already up-to-date, {skipped} skipped, {errors} errors"
-    print(f"Result: {summary}")
-    if not dry_run and (updated > 0 or errors > 0):
+    parts_summary = []
+    if updated:
+        parts_summary.append(f"{updated} {'would update' if dry_run else 'updated'}")
+    if created:
+        parts_summary.append(f"{created} {'would create' if dry_run else 'created'}")
+    parts_summary += [f"{unchanged} already up-to-date", f"{skipped} skipped", f"{errors} errors"]
+    print(f"Result [{name}]: {', '.join(parts_summary)}")
+    if not dry_run and (updated > 0 or created > 0 or errors > 0):
         icon = "🚨" if errors > 0 else "✅"
         parts = []
         if updated:
             parts.append(f"{updated} updated")
+        if created:
+            parts.append(f"{created} created")
         if errors:
             parts.append(f"{errors} error{'s' if errors > 1 else ''}")
-        send_slack(f"{icon} *SmartSuite Sync — {name}*\n{', '.join(parts)}")
+        send_slack(f"{icon} *SmartSuite Sync*\n*Job:* {name}\n{', '.join(parts)}", slack_webhook)
 
 # ── MAIN ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
