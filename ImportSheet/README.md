@@ -64,6 +64,7 @@ cp sync_jobs.py ~/sync_jobs.py
 ```python
 JOBS = [
     {
+        # ── Required ──────────────────────────────────────────────────────────
         "name":       "EOS Updates",           # label shown in logs and Slack
         "sheet_id":   "<google-spreadsheet-id>",
         "tab_name":   "Sheet1",                # tab name within the spreadsheet
@@ -71,15 +72,40 @@ JOBS = [
         "key_column": "Auto number",           # sheet column used to match records
         "key_field":  "autonumber",            # SmartSuite field slug for the same key
 
+        # ── Optional ──────────────────────────────────────────────────────────
+
         # field_map: {sheet column header → SmartSuite field name}
-        # Omit entirely to auto-match by column name.
+        # Omit entirely to auto-match sheet headers to SmartSuite field labels.
         "field_map": {
             "Sheet Column": "SmartSuite Field Name",
         },
 
-        # select_maps: optional — auto-fetched from the API.
-        # Add only to override a specific option label.
-        # "select_maps": { "SmartSuite Field Name": {"Label": "value_code"} },
+        # select_maps: auto-fetched from the API at runtime.
+        # Add only to override a specific option label → value code.
+        # "select_maps": { "slug": {"Label": "value_code"} },
+
+        # upsert: True → create a new SmartSuite record when no match is found.
+        # False (default) → skip unmatched rows.
+        # "upsert": True,
+
+        # dry_run: True → log what would change without writing anything.
+        # Also controllable globally via the --dry-run CLI flag.
+        # "dry_run": True,
+
+        # exclude_columns: sheet column headers to skip entirely.
+        # Useful for read-only or auto-computed SmartSuite fields that always
+        # appear to differ from sheet values (e.g. "Updated", "Created").
+        # "exclude_columns": ["Updated", "Created"],
+
+        # rename_app: rename the SmartSuite table before syncing.
+        # {now} is replaced with the current date/time.
+        # "rename_app": "Jira Import_{now}",
+
+        # slack_webhook: per-job Slack incoming-webhook URL.
+        # Omit (or None) → fall back to global WEBHOOK_URL from config.py.
+        # False → disable Slack notifications for this job entirely.
+        # "slack_webhook": "https://hooks.slack.com/services/...",
+        # "slack_webhook": False,
     },
 ]
 ```
