@@ -43,7 +43,7 @@ cfg = load_config(args.config)
 
 TOKEN                        = cfg.TOKEN
 ACCOUNT_ID                   = cfg.ACCOUNT_ID
-GOOGLE_SERVICE_ACCOUNT_FILE  = cfg.GOOGLE_SERVICE_ACCOUNT_FILE
+GOOGLE_SERVICE_ACCOUNT_INFO  = cfg.GOOGLE_SERVICE_ACCOUNT_INFO
 GOOGLE_SHARED_DRIVE_ID       = cfg.GOOGLE_SHARED_DRIVE_ID
 GOOGLE_BACKUP_ROOT_FOLDER_ID = cfg.GOOGLE_BACKUP_ROOT_FOLDER_ID
 # Optional: list of solution-name prefixes to exclude from backup (e.g. ['Test', 'Archive'])
@@ -71,8 +71,8 @@ ss_headers = {
 }
 
 # ================= GOOGLE DRIVE =================
-_creds = service_account.Credentials.from_service_account_file(
-    GOOGLE_SERVICE_ACCOUNT_FILE,
+_creds = service_account.Credentials.from_service_account_info(
+    GOOGLE_SERVICE_ACCOUNT_INFO,
     scopes=['https://www.googleapis.com/auth/drive',
             'https://www.googleapis.com/auth/spreadsheets']
 )

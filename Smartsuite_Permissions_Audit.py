@@ -29,13 +29,13 @@ parser.add_argument("--config", required=True, metavar="PATH", help="Path to Sma
 args = parser.parse_args()
 cfg = load_config(args.config)
 
-TOKEN                       = cfg.TOKEN
-ACCOUNT_ID                  = cfg.ACCOUNT_ID
-GOOGLE_SERVICE_ACCOUNT_FILE = cfg.GOOGLE_SERVICE_ACCOUNT_FILE
-GOOGLE_SHEET_PERMISSIONS_ID = cfg.GOOGLE_SHEET_PERMISSIONS_ID
+TOKEN                        = cfg.TOKEN
+ACCOUNT_ID                   = cfg.ACCOUNT_ID
+GOOGLE_SERVICE_ACCOUNT_INFO  = cfg.GOOGLE_SERVICE_ACCOUNT_INFO
+GOOGLE_SHEET_PERMISSIONS_ID  = cfg.GOOGLE_SHEET_PERMISSIONS_ID
 
-_creds = service_account.Credentials.from_service_account_file(
-    GOOGLE_SERVICE_ACCOUNT_FILE,
+_creds = service_account.Credentials.from_service_account_info(
+    GOOGLE_SERVICE_ACCOUNT_INFO,
     scopes=['https://www.googleapis.com/auth/spreadsheets']
 )
 sheets_svc = build('sheets', 'v4', credentials=_creds)

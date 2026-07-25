@@ -1,42 +1,41 @@
-import os
+"""SmartSuite + Google credentials loader.
+
+Priority (first wins):
+  1. Local secrets file — path from SMARTSUITE_SECRETS_FILE env var,
+     or ~/smartsuite_secrets.json by default.
+  2. AWS Secrets Manager — secret 'secrets/prod/esh-automation/cron/config'
+     in il-central-1, using the EC2 IAM role (no credentials needed on EC2).
+
+To use locally: export the secret to ~/smartsuite_secrets.json once:
+    python3 -c "
+    import boto3, json
+    s = boto3.client('secretsmanager', region_name='il-central-1')
+    print(s.get_secret_value(SecretId='secrets/prod/esh-automation/cron/config')['SecretString'])
+    " > ~/smartsuite_secrets.json
+"""
+
 import json
-import boto3
-from botocore.exceptions import ClientError
+import os
+from pathlib import Path
 
-def get_aws_secret(secret_name, region_name="il-central-1"):
-    """
-    Fetches and parses a JSON secret from AWS Secrets Manager.
-    Assumes the machine has the appropriate IAM role attached.
-    """
-    client = boto3.client("secretsmanager", region_name=region_name)
-    
-    try:
-        response = client.get_secret_value(SecretId=secret_name)
-    except ClientError as e:
-        print(f"Error retrieving secret '{secret_name}': {e}")
-        raise e
+_LOCAL_FILE = Path(os.environ.get("SMARTSUITE_SECRETS_FILE", Path.home() / "smartsuite_secrets.json"))
 
-    # Parse and return the JSON string as a dictionary
-    return json.loads(response["SecretString"])
+if _LOCAL_FILE.exists():
+    secrets = json.loads(_LOCAL_FILE.read_text())
+    print(f"[SmartsuiteConfig] local secrets: {_LOCAL_FILE}", flush=True)
+else:
+    import boto3
+    client = boto3.client("secretsmanager", region_name="il-central-1")
+    secrets = json.loads(client.get_secret_value(
+        SecretId="secrets/prod/esh-automation/cron/config"
+    )["SecretString"])
+    print("[SmartsuiteConfig] AWS Secrets Manager", flush=True)
 
-# ==========================================
-# USAGE IMPLEMENTATION
-# ==========================================
-if __name__ == "__main__":
-    # 1. Define your specific target
-    SECRET_ID = "secrets/prod/placeholder/config"
-    REGION = "il-central-1"
+TOKEN      = secrets["smartsuite_api_key"]
+ACCOUNT_ID = secrets["smartsuite_workspace"]
 
-    # 2. Fetch the secrets
-    secrets = get_aws_secret(secret_name=SECRET_ID, region_name=REGION)
-
-    # 3. Map your variables using .get() to avoid KeyErrors if a key is missing
-    TOKEN = secrets.get("smartsuite_api_key")
-    ACCOUNT_ID = secrets.get("smartsuite_workspace")
-
-    # Google Drive Variables
-    GOOGLE_SERVICE_ACCOUNT_JSON  = secrets.get("google_service_vaules_json")
-    GOOGLE_SHARED_DRIVE_ID       = secrets.get("GOOGLE_SHARED_DRIVE_ID")
-    GOOGLE_BACKUP_ROOT_FOLDER_ID = secrets.get("GOOGLE_BACKUP_ROOT_FOLDER_ID")
-    GOOGLE_SHEET_PERMISSIONS_ID  = secrets.get("GOOGLE_SHEET_PERMISSIONS_ID")
-
+# Google credentials as a dict (from secrets) — use from_service_account_info(), not from_service_account_file()
+GOOGLE_SERVICE_ACCOUNT_INFO  = secrets["google_service_vaules_json"]
+GOOGLE_SHARED_DRIVE_ID       = secrets["GOOGLE_SHARED_DRIVE_ID"]
+GOOGLE_BACKUP_ROOT_FOLDER_ID = secrets["GOOGLE_BACKUP_ROOT_FOLDER_ID"]
+GOOGLE_SHEET_PERMISSIONS_ID  = secrets["GOOGLE_SHEET_PERMISSIONS_ID"]
