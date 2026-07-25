@@ -46,10 +46,10 @@ headers  = {"accept": "application/json", "Authorization": "Token " + TOKEN, "AC
 USER_TYPE_LABEL = {'1': 'Member', '2': 'Admin', '3': 'Guest'}
 
 
-def api_get(url, max_retries=6):
+def _api_call(method, url, max_retries=6, **kwargs):
     delay = 2
     for attempt in range(max_retries):
-        resp = requests.get(url, headers=headers)
+        resp = method(url, headers=headers, **kwargs)
         if resp.status_code != 429:
             return resp
         wait = int(resp.headers.get('Retry-After', delay))
@@ -57,6 +57,12 @@ def api_get(url, max_retries=6):
         time.sleep(wait)
         delay = min(delay * 2, 60)
     return resp
+
+def api_get(url, max_retries=6):
+    return _api_call(requests.get, url, max_retries)
+
+def api_post(url, max_retries=6, **kwargs):
+    return _api_call(requests.post, url, max_retries, **kwargs)
 
 
 def get_label_from_slug(data, field_slug):
@@ -109,7 +115,7 @@ def get_tables():
 
 
 def get_users():
-    resp = requests.post(base_url + "v1/applications/members/records/list/", headers=headers)
+    resp = api_post(base_url + "v1/applications/members/records/list/")
     if resp.status_code != 200:
         print(f"Error loading users: {resp.status_code}")
         sys.exit(1)
@@ -130,10 +136,9 @@ def get_users():
 
 
 def get_teams():
-    resp = requests.post(
+    resp = api_post(
         base_url + 'v1/applications/' + teams_table + '/records/list/',
         params={"offset": 0},
-        headers=headers,
     )
     if resp.status_code != 200:
         print(f"Error loading teams: {resp.status_code}\n{resp.text}")
