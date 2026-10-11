@@ -35,7 +35,15 @@ TOKEN      = secrets["smartsuite_api_key"]
 ACCOUNT_ID = secrets["smartsuite_workspace"]
 
 # Google credentials as a dict (from secrets) — use from_service_account_info(), not from_service_account_file()
-GOOGLE_SERVICE_ACCOUNT_INFO  = secrets["google_service_vaules_json"]
+# Renamed in the secret from the old typo "google_service_vaules_json"; accept both.
+GOOGLE_SERVICE_ACCOUNT_INFO  = secrets.get("google_service_account_json") or secrets["google_service_vaules_json"]
+if isinstance(GOOGLE_SERVICE_ACCOUNT_INFO, str):
+    # Stored as a string: JSON, or a Python dict literal (single quotes).
+    import ast
+    try:
+        GOOGLE_SERVICE_ACCOUNT_INFO = json.loads(GOOGLE_SERVICE_ACCOUNT_INFO)
+    except ValueError:
+        GOOGLE_SERVICE_ACCOUNT_INFO = ast.literal_eval(GOOGLE_SERVICE_ACCOUNT_INFO)
 GOOGLE_SHARED_DRIVE_ID       = secrets["GOOGLE_SHARED_DRIVE_ID"]
 GOOGLE_BACKUP_ROOT_FOLDER_ID = secrets["GOOGLE_BACKUP_ROOT_FOLDER_ID"]
 GOOGLE_SHEET_PERMISSIONS_ID  = secrets["GOOGLE_SHEET_PERMISSIONS_ID"]

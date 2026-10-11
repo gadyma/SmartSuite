@@ -1,5 +1,6 @@
 # Installation prerequisites:
 # python3 -m pip install requests google-api-python-client google-auth
+# Version 5.1 - adds raw records JSON, full solutions, members/teams and views for structural restore
 # Version 5.0 - Full Drive API: dated backups + attachments on Drive, local temp staging only
 
 import sys
@@ -290,26 +291,30 @@ latest_root_id      = get_or_create_folder('Latest', backup_root_id)
 temp_dir = Path(tempfile.mkdtemp(prefix='smartsuite_backup_'))
 
 # ================= SMARTSUITE API =================
+solutions_raw = []   # full solution objects (permissions, colors, etc.) for restore
+
 def get_solutions():
-    r = requests.get(f"{BASE_URL}/solutions/?workspace={ACCOUNT_ID}", headers=ss_headers, timeout=TIMEOUT)
+    global solutions_raw
+    r = _ss_get(f"{BASE_URL}/solutions/", params={"workspace": ACCOUNT_ID})
     if r.status_code != 200:
         print(f"Error loading solutions: {r.status_code}")
         return {}
-    return {s['id']: s['name'] for s in r.json()}
+    solutions_raw = r.json()
+    return {s['id']: s['name'] for s in solutions_raw}
 
 def get_applications():
-    r = requests.get(f"{BASE_URL}/applications/", headers=ss_headers, timeout=TIMEOUT)
+    r = _ss_get(f"{BASE_URL}/applications/")
     if r.status_code != 200:
         print(f"Can't load table list: {r.status_code}")
         return []
     return r.json()
 
-def _ss_post(url, **kwargs):
-    """POST to SmartSuite with retries on rate limits, server errors, and connection failures."""
+def _ss_request(method, url, **kwargs):
+    """Call SmartSuite with retries on rate limits, server errors, and connection failures."""
     delay = 2
     for attempt in range(6):
         try:
-            r = requests.post(url, headers=ss_headers, timeout=TIMEOUT, **kwargs)
+            r = requests.request(method, url, headers=ss_headers, timeout=TIMEOUT, **kwargs)
             if r.status_code == 429:
                 wait = int(r.headers.get('Retry-After', delay))
                 print(f"  Rate limited — retrying in {wait}s (attempt {attempt + 1}/6)")
@@ -328,6 +333,12 @@ def _ss_post(url, **kwargs):
             delay = min(delay * 2, 60)
     return r  # return last response after exhausting retries
 
+def _ss_post(url, **kwargs):
+    return _ss_request('POST', url, **kwargs)
+
+def _ss_get(url, **kwargs):
+    return _ss_request('GET', url, **kwargs)
+
 def get_records(application_id):
     url = f"{BASE_URL}/applications/{application_id}/records/list/"
     all_records, offset, limit = [], 0, 1000
@@ -341,6 +352,36 @@ def get_records(application_id):
             break
         offset += limit
     return all_records
+
+def _optional_fetch(label, fn):
+    """Run an optional backup fetch; never let it break the main backup."""
+    try:
+        return fn()
+    except Exception as e:
+        print(f"  Warning: could not back up {label}: {e}")
+        return None
+
+def get_members():
+    # 'members' is a system application, listed like any table
+    return get_records('members')
+
+def get_teams():
+    # limit 0 (the default) returns every team
+    r = _ss_post(f"{BASE_URL}/teams/list/", json={})
+    r.raise_for_status()
+    data = r.json()
+    return data.get('items', data) if isinstance(data, dict) else data
+
+def get_views(solution_id):
+    """Views ("reports") of a solution. Each view's `state` holds the full definition:
+    fieldsWindow, filterWindow, sortWindow, groupbyWindow, aggregates, chartSettings.
+    GET /reports/{id}/ adds only permissions and dashboard/document bodies (one call per view)."""
+    r = _ss_get(f"{BASE_URL}/reports/", params={"solution": solution_id})
+    r.raise_for_status()
+    return r.json()
+
+def write_json(path, data):
+    path.write_text(json.dumps(data, indent=4, ensure_ascii=False), encoding='utf-8')
 
 def generate_csv(app_id, fields):
     r = _ss_post(f"{BASE_URL}/applications/{app_id}/records/generate_csv/",
@@ -403,7 +444,7 @@ try:
         for t in tables_to_backup:
             sol_name = solutions.get(t['solution'], t['solution'])
             if sol_name not in seen and len(seen) >= MAX_SOLUTIONS:
-                break
+                continue   # tables aren't grouped by solution, so keep scanning
             seen.add(sol_name)
             filtered.append(t)
         tables_to_backup = filtered
@@ -441,10 +482,9 @@ try:
                 enhanced = inject_record_id(csv_content, records)
                 (sol_temp / f"{clean_app}.csv").write_text(enhanced, encoding='utf-8-sig')
 
-            # 3. Structure JSON
-            (sol_temp / f"{clean_app}.structure.json").write_text(
-                json.dumps(table_structure, indent=4, ensure_ascii=False), encoding='utf-8'
-            )
+            # 3. Structure JSON + raw records JSON (keeps linked-record / user IDs for restore)
+            write_json(sol_temp / f"{clean_app}.structure.json", table_structure)
+            write_json(sol_temp / f"{clean_app}.records.json", records)
 
             # 4. Attachments → Drive in parallel (deduped by handle)
             file_fields = file_attachment_fields(table_structure)
@@ -503,6 +543,24 @@ try:
     if tables_backed_up == 0:
         print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} No tables backed up — skipping lock file, will retry next run.")
         sys.exit(1)
+
+    # 6. Restore metadata: full solutions, members, teams, views per solution
+    ws_temp = temp_dir / '_Workspace'
+    ws_temp.mkdir(exist_ok=True)
+    write_json(ws_temp / 'solutions.json', solutions_raw)
+    write_json(ws_temp / 'tables.json', tables_data)
+    for label, fn in (('members', get_members), ('teams', get_teams)):
+        data = _optional_fetch(label, fn)
+        if data is not None:
+            write_json(ws_temp / f'{label}.json', data)
+
+    for sol_id in dict.fromkeys(t['solution'] for t in tables_to_backup):
+        sol_name = _safe_name(solutions.get(sol_id, sol_id))
+        views = _optional_fetch(f'views of {sol_name}', lambda: get_views(sol_id))
+        if views is None:
+            continue
+        (temp_dir / sol_name).mkdir(exist_ok=True)
+        write_json(temp_dir / sol_name / '_views.json', views)
 
     print(f"Uploading dated backup to Drive...")
     upload_folder_to_drive(temp_dir, dated_folder_id)
