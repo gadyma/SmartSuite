@@ -47,3 +47,7 @@ if isinstance(GOOGLE_SERVICE_ACCOUNT_INFO, str):
 GOOGLE_SHARED_DRIVE_ID       = secrets["GOOGLE_SHARED_DRIVE_ID"]
 GOOGLE_BACKUP_ROOT_FOLDER_ID = secrets["GOOGLE_BACKUP_ROOT_FOLDER_ID"]
 GOOGLE_SHEET_PERMISSIONS_ID  = secrets["GOOGLE_SHEET_PERMISSIONS_ID"]
+
+# Backup skips solutions whose name starts with any of these (prefix match, case-sensitive).
+# The test solutions are named 'תTest-…' — Hebrew tav first, so a bare 'Test' matches none of them.
+SKIP_SOLUTIONS = ['תTest']
