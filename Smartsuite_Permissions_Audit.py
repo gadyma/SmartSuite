@@ -1,4 +1,5 @@
 # python3 -m pip install requests google-api-python-client google-auth
+# Version 2.1 - SmartSuite GETs retry 429 + timeout; Google calls retry rate limits; prints rows=<n>
 # Version 2.0 - Permissions Export → Google Sheet
 
 import requests
@@ -44,12 +45,14 @@ base_url = "https://app.smartsuite.com/api/"
 headers  = {"accept": "application/json", "Authorization": "Token " + TOKEN, "ACCOUNT-ID": ACCOUNT_ID}
 
 USER_TYPE_LABEL = {'1': 'Member', '2': 'Admin', '3': 'Guest'}
+TIMEOUT         = 60
+GOOGLE_RETRIES  = 6    # googleapiclient backoff on 429/5xx and 403 user/rateLimitExceeded
 
 
 def _api_call(method, url, max_retries=6, **kwargs):
     delay = 2
     for attempt in range(max_retries):
-        resp = method(url, headers=headers, **kwargs)
+        resp = method(url, headers=headers, timeout=TIMEOUT, **kwargs)
         if resp.status_code != 429:
             return resp
         wait = int(resp.headers.get('Retry-After', delay))
@@ -73,7 +76,7 @@ def get_label_from_slug(data, field_slug):
 
 
 def get_solutions():
-    resp = requests.get(base_url + "v1/solutions/", headers=headers)
+    resp = api_get(base_url + "v1/solutions/")
     if resp.status_code != 200:
         print(f"Error loading solutions: {resp.status_code}")
         sys.exit(1)
@@ -90,7 +93,7 @@ def get_solutions():
 
 
 def get_tables():
-    resp = requests.get(base_url + "v1/applications/", headers=headers)
+    resp = api_get(base_url + "v1/applications/")
     if resp.status_code != 200:
         print(f"Can't load Table list, error: {resp.status_code}")
         sys.exit(1)
@@ -265,18 +268,18 @@ for fld in field_perm:
 # ── Update Google Sheet ────────────────────────────────────────────────────────
 print(f"Updating Google Sheet {GOOGLE_SHEET_PERMISSIONS_ID} ...")
 
-spreadsheet = sheets_svc.spreadsheets().get(spreadsheetId=GOOGLE_SHEET_PERMISSIONS_ID).execute()
+spreadsheet = sheets_svc.spreadsheets().get(spreadsheetId=GOOGLE_SHEET_PERMISSIONS_ID).execute(num_retries=GOOGLE_RETRIES)
 sheet_id    = spreadsheet['sheets'][0]['properties']['sheetId']
 
 sheets_svc.spreadsheets().values().clear(
     spreadsheetId=GOOGLE_SHEET_PERMISSIONS_ID, range='A:ZZZ'
-).execute()
+).execute(num_retries=GOOGLE_RETRIES)
 sheets_svc.spreadsheets().values().update(
     spreadsheetId=GOOGLE_SHEET_PERMISSIONS_ID,
     range='A1',
     valueInputOption='RAW',
     body={'values': [[str(c) if c is not None else '' for c in row] for row in all_rows]}
-).execute()
+).execute(num_retries=GOOGLE_RETRIES)
 
 sheets_svc.spreadsheets().batchUpdate(
     spreadsheetId=GOOGLE_SHEET_PERMISSIONS_ID,
@@ -303,6 +306,7 @@ sheets_svc.spreadsheets().batchUpdate(
             }
         },
     ]}
-).execute()
+).execute(num_retries=GOOGLE_RETRIES)
 
 print(f"Google Sheet updated: {len(all_rows) - 2} data rows written.")
+print(f"rows={len(all_rows) - 2}")   # read back by esh-etl as the job's row count
