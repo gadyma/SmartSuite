@@ -1,5 +1,6 @@
 # Installation prerequisites:
 # python3 -m pip install requests google-api-python-client google-auth
+# Version 5.2 - Drive/Sheets calls retry with backoff on rate limits (num_retries)
 # Version 5.1 - adds raw records JSON, full solutions, members/teams and views for structural restore
 # Version 5.0 - Full Drive API: dated backups + attachments on Drive, local temp staging only
 
@@ -56,6 +57,7 @@ TIMEOUT        = 60
 MAX_SOLUTIONS  = None   # Set to an integer (e.g. 3) for debug runs; None = backup all
 UPLOAD_WORKERS = 10     # parallel workers for dated-folder file uploads
 ATT_WORKERS    = 5      # parallel workers for attachment uploads
+GOOGLE_RETRIES = 6      # googleapiclient backoff on 429/5xx and 403 user/rateLimitExceeded
 FOLDER_MIME    = 'application/vnd.google-apps.folder'
 SHEET_MIME     = 'application/vnd.google-apps.spreadsheet'
 RUN_LOCK_FILE  = Path.home() / '.smartsuite_last_backup'
@@ -113,7 +115,7 @@ def _drive_list(svc, q, fields='files(id,name)'):
         )
         if page_token:
             kwargs['pageToken'] = page_token
-        res = svc.files().list(**kwargs).execute()
+        res = svc.files().list(**kwargs).execute(num_retries=GOOGLE_RETRIES)
         items.extend(res.get('files', []))
         page_token = res.get('nextPageToken')
         if not page_token:
@@ -133,7 +135,7 @@ def get_or_create_folder(name, parent_id, svc=None):
     fid = files[0]['id'] if files else svc.files().create(
         body={'name': name, 'mimeType': FOLDER_MIME, 'parents': [parent_id]},
         supportsAllDrives=True, fields='id'
-    ).execute()['id']
+    ).execute(num_retries=GOOGLE_RETRIES)['id']
     with _folder_cache_lock:
         _folder_cache[key] = fid
     return fid
@@ -145,12 +147,12 @@ def upload_file(name, content_bytes, mimetype, parent_id):
     if files:
         drive_svc.files().update(
             fileId=files[0]['id'], media_body=media, supportsAllDrives=True
-        ).execute()
+        ).execute(num_retries=GOOGLE_RETRIES)
     else:
         drive_svc.files().create(
             body={'name': name, 'parents': [parent_id]},
             media_body=media, supportsAllDrives=True, fields='id'
-        ).execute()
+        ).execute(num_retries=GOOGLE_RETRIES)
 
 def _get_or_create_solution_spreadsheet(sol_name, parent_id):
     """Return the spreadsheet ID for a solution's consolidated Latest sheet."""
@@ -160,14 +162,14 @@ def _get_or_create_solution_spreadsheet(sol_name, parent_id):
     sid = files[0]['id'] if files else drive_svc.files().create(
         body={'name': sol_name, 'mimeType': SHEET_MIME, 'parents': [parent_id]},
         supportsAllDrives=True, fields='id'
-    ).execute()['id']
+    ).execute(num_retries=GOOGLE_RETRIES)['id']
     _solution_sheet_id[sol_name] = sid
     return sid
 
 def upsert_tab(spreadsheet_id, tab_name, csv_content):
     """Create or overwrite a tab in an existing spreadsheet (caches metadata per run)."""
     if spreadsheet_id not in _tab_cache:
-        ss_meta = sheets_svc.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+        ss_meta = sheets_svc.spreadsheets().get(spreadsheetId=spreadsheet_id).execute(num_retries=GOOGLE_RETRIES)
         _tab_cache[spreadsheet_id] = {
             s['properties']['title']: s['properties']['sheetId']
             for s in ss_meta['sheets']
@@ -182,7 +184,7 @@ def upsert_tab(spreadsheet_id, tab_name, csv_content):
     if batch_requests:
         result = sheets_svc.spreadsheets().batchUpdate(
             spreadsheetId=spreadsheet_id, body={'requests': batch_requests}
-        ).execute()
+        ).execute(num_retries=GOOGLE_RETRIES)
         for reply in result.get('replies', []):
             if 'addSheet' in reply:
                 props = reply['addSheet']['properties']
@@ -192,12 +194,12 @@ def upsert_tab(spreadsheet_id, tab_name, csv_content):
 
     sheets_svc.spreadsheets().values().clear(
         spreadsheetId=spreadsheet_id, range=f"'{tab_name}'!A:ZZZ"
-    ).execute()
+    ).execute(num_retries=GOOGLE_RETRIES)
     sheets_svc.spreadsheets().values().update(
         spreadsheetId=spreadsheet_id, range=f"'{tab_name}'!A1",
         valueInputOption='RAW',
         body={'values': list(csv.reader(io.StringIO(csv_content)))}
-    ).execute()
+    ).execute(num_retries=GOOGLE_RETRIES)
 
 def ensure_attachment_on_drive(handle, filename, app_att_id):
     """Upload attachment to Drive under handle-named folder. Skip if already uploaded."""
@@ -217,7 +219,7 @@ def ensure_attachment_on_drive(handle, filename, app_att_id):
         body={'name': filename, 'parents': [handle_folder_id]},
         media_body=MediaInMemoryUpload(resp.content, mimetype='application/octet-stream'),
         supportsAllDrives=True, fields='id'
-    ).execute()
+    ).execute(num_retries=GOOGLE_RETRIES)
     return True
 
 def _collect_uploads(local_path, drive_parent_id, uploads):
@@ -236,7 +238,7 @@ def _upload_one(item, mime, parent_id):
         body={'name': item.name, 'parents': [parent_id]},
         media_body=MediaInMemoryUpload(item.read_bytes(), mimetype=mime),
         supportsAllDrives=True, fields='id'
-    ).execute()
+    ).execute(num_retries=GOOGLE_RETRIES)
 
 def upload_folder_to_drive(local_path, drive_parent_id):
     """Recursively upload a local temp folder to Drive (always create, no existence check)."""
@@ -258,7 +260,7 @@ def rotate_old_backups():
         try:
             drive_svc.files().update(
                 fileId=old['id'], body={'trashed': True}, supportsAllDrives=True
-            ).execute()
+            ).execute(num_retries=GOOGLE_RETRIES)
         except Exception as e:
             print(f"  Warning (could not trash {old['name']}): {e}")
 
